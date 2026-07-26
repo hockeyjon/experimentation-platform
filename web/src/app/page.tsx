@@ -7,8 +7,6 @@ import { useAppDispatch, useAppSelector, loadPersistedAssignments } from "@/stor
 import {
   assignUser,
   clearBucket,
-  clearError,
-  createExperiment,
   fetchExperiments,
   hydrateAssignments,
   logConversion,
@@ -22,7 +20,6 @@ import {
 export default function Dashboard() {
   const dispatch = useAppDispatch();
   const { items, selectedKey, assignments, loading, error } = useAppSelector((s) => s.experiments);
-  const [showCreate, setShowCreate] = useState(false);
 
   // Load experiments + restore the persisted buckets on mount.
   useEffect(() => {
@@ -73,12 +70,6 @@ export default function Dashboard() {
           )}
         </main>
       </div>
-
-      {showCreate && (
-        <Modal onClose={() => setShowCreate(false)}>
-          <CreateExperimentCard onCreated={() => setShowCreate(false)} />
-        </Modal>
-      )}
     </>
   );
 }
@@ -112,27 +103,6 @@ function VariantTag(props: { isControl: boolean }) {
     <span className={`vtag ${props.isControl ? "vtag-control" : "vtag-variant"}`}>
       {props.isControl ? "control" : "variant"}
     </span>
-  );
-}
-
-function Modal(props: { onClose: () => void; children: React.ReactNode }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") props.onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [props]);
-
-  return (
-    <div className="modal-backdrop" onClick={props.onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <button className="modal-close" aria-label="Close" onClick={props.onClose}>
-          ×
-        </button>
-        {props.children}
-      </div>
-    </div>
   );
 }
 
@@ -390,60 +360,5 @@ function UserBoard(props: { experimentKey: string; variants: Variant[] }) {
         })}
       </div>
     </div>
-  );
-}
-
-function CreateExperimentCard(props: { onCreated: () => void }) {
-  const dispatch = useAppDispatch();
-  const error = useAppSelector((s) => s.experiments.error);
-  const [key, setKey] = useState("");
-  const [name, setName] = useState("");
-  const canSubmit = key.trim() && name.trim();
-
-  return (
-    <>
-      <h3>Create experiment</h3>
-      <p className="desc">Creates a 50/50 control vs. variant experiment in Postgres via GraphQL.</p>
-      <div className="row">
-        <div>
-          <label>Key (unique)</label>
-          <input placeholder="new_feature_test" value={key} onChange={(e) => setKey(e.target.value)} />
-        </div>
-        <div>
-          <label>Name</label>
-          <input placeholder="New Feature Test" value={name} onChange={(e) => setName(e.target.value)} />
-        </div>
-        <button
-          className="primary"
-          disabled={!canSubmit}
-          onClick={async () => {
-            try {
-              await dispatch(
-                createExperiment({
-                  key: key.trim(),
-                  name: name.trim(),
-                  variants: [
-                    { key: "control", name: "Control", weight: 50, isControl: true },
-                    { key: "variant", name: "Variant", weight: 50, isControl: false },
-                  ],
-                }),
-              ).unwrap();
-              setKey("");
-              setName("");
-              props.onCreated();
-            } catch {
-              /* error is surfaced in the store and shown below (e.g. duplicate key) */
-            }
-          }}
-        >
-          Create
-        </button>
-      </div>
-      {error && (
-        <div className="result-pill error" role="alert">
-          ⚠ {error}
-        </div>
-      )}
-    </>
   );
 }

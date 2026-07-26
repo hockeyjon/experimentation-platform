@@ -107,22 +107,6 @@ export const setStatus = createAsyncThunk(
   },
 );
 
-export const createExperiment = createAsyncThunk(
-  "experiments/create",
-  async (input: {
-    key: string;
-    name: string;
-    description?: string;
-    variants: { key: string; name: string; weight: number; isControl: boolean }[];
-  }) => {
-    const data = await gql<{ createExperiment: Experiment }>(
-      `mutation($input:CreateExperimentInput!){ createExperiment(input:$input){ id key name description status variants { id key name weight isControl } } }`,
-      { input },
-    );
-    return data.createExperiment;
-  },
-);
-
 // Clear an experiment's enrollments in the BACKEND (Postgres + Redis + Mongo),
 // then drop them from the local board. Replaces the old front-end-only reducer,
 // which left stale backend assignments — so re-enrolling a user hit "already exists".
@@ -137,9 +121,6 @@ const slice = createSlice({
   reducers: {
     selectExperiment(state, action: PayloadAction<string>) {
       state.selectedKey = action.payload;
-    },
-    clearError(state) {
-      state.error = null;
     },
     // Restore the persisted board (from localStorage) on app mount.
     hydrateAssignments(state, action: PayloadAction<AssignedUser[]>) {
@@ -210,13 +191,6 @@ const slice = createSlice({
       .addCase(setStatus.rejected, (state, action) => {
         state.error = action.error.message ?? "Failed to change status";
       })
-      .addCase(createExperiment.fulfilled, (state, action) => {
-        state.items.unshift(action.payload);
-        state.selectedKey = action.payload.key;
-      })
-      .addCase(createExperiment.rejected, (state, action) => {
-        state.error = action.error.message ?? "Failed to create experiment";
-      })
       .addCase(clearBucket.pending, (state) => {
         state.error = null;
       })
@@ -230,5 +204,5 @@ const slice = createSlice({
   },
 });
 
-export const { selectExperiment, clearError, hydrateAssignments } = slice.actions;
+export const { selectExperiment, hydrateAssignments } = slice.actions;
 export default slice.reducer;
