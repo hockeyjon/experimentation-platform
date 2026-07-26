@@ -1,0 +1,28 @@
+{
+  "name": "experimentation-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node.js GraphQL API for the experimentation platform (Experimentation stack MVP)",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev --name init",
+    "prisma:push": "prisma db push",
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@apollo/server": "^4.11.3",
+    "@prisma/client": "^6.2.1",
+    "graphql": "^16.10.0",
+    "graphql-scalars": "^1.24.0",
+    "ioredis": "^5.4.2",
+    "mongodb": "^6.12.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.2.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,64 @@
+# docker-compose.yml
+#
+# Spins up the three datastores the Experimentation role uses, but locally:
+#   - Postgres   -> stands in for AWS Aurora (relational: experiments, variants, assignments)
+#   - MongoDB    -> stands in for AWS DocumentDB (document store: high-volume events)
+#   - Redis      -> caching layer (same as prod)
+#
+# Run:   docker compose up -d
+# Stop:  docker compose down          (add -v to also wipe the data volumes)
+# Check: docker compose ps
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: experimentation-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: experimentation
+      POSTGRES_PASSWORD: experimentation
+      POSTGRES_DB: experiments
+    ports:
+      # Host 5433 -> container 5432. Host 5432 is often taken by a native
+      # Postgres.app/Homebrew install; 5433 avoids that conflict.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U experimentation -d experiments"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    container_name: experimentation-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: experimentation-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  mongodata:
+  redisdata:

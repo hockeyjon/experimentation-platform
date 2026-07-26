@@ -1,0 +1,93 @@
+# Production stack for the EC2 instance.
+#
+# Difference from the local docker-compose.yml:
+#   - Adds the app services (api, stats) as built images, plus Caddy for HTTPS.
+#   - The web frontend is NOT here — it's served statically from S3/CloudFront.
+#   - ONLY Caddy publishes ports (80/443). The databases and app services have no
+#     published ports — they're reachable only on the internal Docker network.
+#     That's why the security group never needed to open 5432/27017/6379/4000.
+#   - Services talk to each other by service name (postgres, mongo, redis), not localhost.
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+  api:
+    build: ../api
+    restart: unless-stopped
+    environment:
+      # Hosts are Docker service names, resolved on the internal network.
+      DATABASE_URL: postgresql://experimentation:experimentation@postgres:5432/experiments?schema=public
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DB: experiments_events
+      REDIS_URL: redis://redis:6379
+      PORT: "4000"
+    # Create tables (idempotent) before starting the server.
+    command: sh -c "npx prisma db push --skip-generate && npm run start"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  stats:
+    build: ../stats
+    restart: unless-stopped
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DB: experiments_events
+    depends_on:
+      mongo: { condition: service_healthy }
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: experimentation
+      POSTGRES_PASSWORD: experimentation
+      POSTGRES_DB: experiments
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U experimentation -d experiments"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  mongodata:
+  redisdata:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+dist/
+.env
+*.log
+__pycache__/
+.venv/
+.DS_Store
+# Terraform state / vars (also covered by terraform/.gitignore)
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+INTERVIEW-NOTES.md

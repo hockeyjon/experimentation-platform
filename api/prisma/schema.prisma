@@ -1,0 +1,66 @@
+// Prisma schema — the relational model, stored in Postgres (stands in for AWS Aurora).
+//
+// Prisma is the ORM the Experimentation role uses. This file is the single source of truth
+// for the relational tables; `prisma db push` creates them, and `prisma generate`
+// produces a fully typed client you import in TypeScript.
+//
+// Why relational here? Experiments, their variants, and which user is assigned to
+// which variant all need integrity + uniqueness constraints. That's a relational job.
+// High-volume *events* (exposures, conversions) go to MongoDB instead — see src/db/mongo.ts.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ExperimentStatus {
+  DRAFT
+  RUNNING
+  PAUSED
+  COMPLETED
+}
+
+model Experiment {
+  id          String           @id @default(cuid())
+  key         String           @unique // stable identifier used by client code, e.g. "checkout_button_color"
+  name        String
+  description String?
+  status      ExperimentStatus @default(DRAFT)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  variants    Variant[]
+  assignments Assignment[]
+}
+
+model Variant {
+  id           String  @id @default(cuid())
+  experimentId String
+  key          String // e.g. "control", "treatment"
+  name         String
+  weight       Int     @default(50) // relative traffic weight; weights across variants define the split
+  isControl    Boolean @default(false)
+
+  experiment  Experiment   @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  assignments Assignment[]
+
+  @@unique([experimentId, key]) // a variant key is unique within an experiment
+}
+
+model Assignment {
+  id           String   @id @default(cuid())
+  experimentId String
+  variantId    String
+  userId       String // the end-user being bucketed (not a platform login)
+  createdAt    DateTime @default(now())
+
+  experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  variant    Variant    @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  @@unique([experimentId, userId]) // one sticky assignment per user per experiment
+  @@index([variantId])
+}

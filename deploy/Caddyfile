@@ -1,0 +1,13 @@
+# Caddy config. Caddy automatically obtains + renews a free Let's Encrypt TLS
+# certificate for this hostname, as long as:
+#   1. the domain's A record points at this server, and
+#   2. ports 80 and 443 are reachable (they are — see the security group).
+#
+# It then reverse-proxies HTTPS traffic to the GraphQL API container on port 4000.
+#
+# Optional: to receive cert-expiry notices, add a global ACME contact email via an
+# environment variable — { email {$ACME_EMAIL} } — and set ACME_EMAIL on the host.
+
+api.gunbarrelstudio.com {
+    reverse_proxy api:4000
+}
