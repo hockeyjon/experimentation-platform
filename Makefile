@@ -29,7 +29,7 @@ RSYNC_EXCLUDES := --exclude node_modules --exclude .next --exclude out --exclude
                   --exclude .venv --exclude web --exclude terraform --exclude .env --exclude .DS_Store
 
 .DEFAULT_GOAL := help
-.PHONY: help build sync invalidate frontend backend seed deploy ssh ps logs start stop status
+.PHONY: help build sync invalidate frontend backend seed deploy ssh ps logs logs-all start stop status
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -78,7 +78,10 @@ ssh: ## Open an SSH session on the instance
 ps: ## Show the status of the backend containers
 	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) ps"
 
-logs: ## Tail the backend container logs (Ctrl-C to stop)
+logs: ## Tail the app-flow logs only (api + stats — no datastore noise)
+	ssh -t -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) logs -f --tail=100 api stats"
+
+logs-all: ## Tail ALL container logs (api, stats, caddy, postgres, mongo, redis)
 	ssh -t -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) logs -f --tail=100"
 
 start: ## Start the EC2 instance

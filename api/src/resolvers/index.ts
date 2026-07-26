@@ -9,6 +9,7 @@ import { prisma } from "../db/prisma.js";
 import { events } from "../db/mongo.js";
 import { redis, assignmentKey, ASSIGNMENT_TTL_SECONDS } from "../db/redis.js";
 import { pickVariant } from "../lib/assignment.js";
+import { log } from "../logger.js";
 
 // Append an event to the Mongo event log (fire-and-forget shape, but we await for safety).
 async function logEvent(
@@ -26,6 +27,7 @@ async function logEvent(
     metadata,
     timestamp: new Date(),
   });
+  log.info("mongo", `logged ${type} → ${experimentKey}/${variantKey} (user ${userId})`);
 }
 
 export const resolvers = {
@@ -33,11 +35,13 @@ export const resolvers = {
   JSON: JSONResolver,
 
   Query: {
-    experiments: () =>
-      prisma.experiment.findMany({
+    experiments: () => {
+      log.info("experiments", "listing all experiments");
+      return prisma.experiment.findMany({
         include: { variants: true },
         orderBy: { createdAt: "desc" },
-      }),
+      });
+    },
 
     experiment: (_: unknown, args: { key: string }) =>
       prisma.experiment.findUnique({
@@ -51,8 +55,10 @@ export const resolvers = {
       const cacheKey = assignmentKey(args.experimentKey, args.userId);
       const cached = await redis.get(cacheKey);
       if (cached) {
+        log.info("assignment", `redis HIT ${args.experimentKey}/${args.userId} → ${cached}`);
         return { experimentKey: args.experimentKey, userId: args.userId, variantKey: cached, cached: true };
       }
+      log.info("assignment", `redis MISS ${args.experimentKey}/${args.userId}, checking Postgres`);
 
       const experiment = await prisma.experiment.findUnique({ where: { key: args.experimentKey } });
       if (!experiment) return null;
@@ -69,6 +75,7 @@ export const resolvers = {
 
     // Aggregate the Mongo event log into per-variant exposure/conversion counts.
     results: async (_: unknown, args: { experimentKey: string }) => {
+      log.info("results", `aggregating Mongo events for ${args.experimentKey}`);
       const experiment = await prisma.experiment.findUnique({
         where: { key: args.experimentKey },
         include: { variants: true },
@@ -128,12 +135,14 @@ export const resolvers = {
     setExperimentStatus: (
       _: unknown,
       args: { key: string; status: "DRAFT" | "RUNNING" | "PAUSED" | "COMPLETED" },
-    ) =>
-      prisma.experiment.update({
+    ) => {
+      log.info("setStatus", `${args.key} → ${args.status}`);
+      return prisma.experiment.update({
         where: { key: args.key },
         data: { status: args.status },
         include: { variants: true },
-      }),
+      });
+    },
 
     // The main event: bucket a user (deterministically), persist the sticky
     // assignment, cache it, and log an exposure.
@@ -147,6 +156,10 @@ export const resolvers = {
       });
       if (!experiment) throw new Error(`Unknown experiment: ${args.experimentKey}`);
       if (experiment.variants.length === 0) throw new Error("Experiment has no variants");
+      log.info(
+        "assignUser",
+        `${args.userId} → ${args.experimentKey}${args.variantKey ? ` (forced=${args.variantKey})` : ""}`,
+      );
 
       // Optional manual override: force a specific variant instead of bucketing.
       // (A demo affordance — a real platform would never move a user between variants.)
@@ -172,11 +185,16 @@ export const resolvers = {
           });
           await redis.set(cacheKey, forced.key, "EX", ASSIGNMENT_TTL_SECONDS);
           await logEvent(args.experimentKey, forced.key, args.userId, "exposure");
+          log.info("assignUser", `override → moved ${args.userId} to variant ${forced.key}`);
           return { experimentKey: args.experimentKey, userId: args.userId, variantKey: forced.key, cached: false };
         }
         // Otherwise keep it sticky. Still log an exposure (the user saw it again).
         await redis.set(cacheKey, existing.variant.key, "EX", ASSIGNMENT_TTL_SECONDS);
         await logEvent(args.experimentKey, existing.variant.key, args.userId, "exposure");
+        log.info(
+          "assignUser",
+          `sticky → ${args.userId} already in ${existing.variant.key} (from Postgres, cache refreshed)`,
+        );
         return { experimentKey: args.experimentKey, userId: args.userId, variantKey: existing.variant.key, cached: true };
       }
 
@@ -195,6 +213,10 @@ export const resolvers = {
       });
       await redis.set(cacheKey, chosen.key, "EX", ASSIGNMENT_TTL_SECONDS);
       await logEvent(args.experimentKey, chosen.key, args.userId, "exposure");
+      log.info(
+        "assignUser",
+        `new → bucketed ${args.userId} into ${chosen.key} (${forced ? "forced" : "deterministic"})`,
+      );
 
       return { experimentKey: args.experimentKey, userId: args.userId, variantKey: chosen.key, cached: false };
     },
@@ -217,13 +239,9 @@ export const resolvers = {
         variantKey = existing.variant.key;
       }
 
-      await logEvent(
-        args.experimentKey,
-        variantKey,
-        args.userId,
-        args.type === "exposure" ? "exposure" : "conversion",
-        args.metadata,
-      );
+      const evType = args.type === "exposure" ? "exposure" : "conversion";
+      log.info("logEvent", `${evType} for ${args.userId} in ${args.experimentKey} (variant ${variantKey})`);
+      await logEvent(args.experimentKey, variantKey, args.userId, evType, args.metadata);
       return true;
     },
 
@@ -233,12 +251,16 @@ export const resolvers = {
       const experiment = await prisma.experiment.findUnique({ where: { key: args.experimentKey } });
       if (!experiment) throw new Error(`Unknown experiment: ${args.experimentKey}`);
       // Postgres: sticky assignments (the source of truth that repopulates Redis).
-      await prisma.assignment.deleteMany({ where: { experimentId: experiment.id } });
+      const del = await prisma.assignment.deleteMany({ where: { experimentId: experiment.id } });
       // Redis: cached assignments for this experiment (KEYS is fine at demo scale).
       const keys = await redis.keys(assignmentKey(args.experimentKey, "*"));
       if (keys.length) await redis.del(...keys);
       // Mongo: exposure + conversion events.
-      await events().deleteMany({ experimentKey: args.experimentKey });
+      const ev = await events().deleteMany({ experimentKey: args.experimentKey });
+      log.info(
+        "clearEnrollments",
+        `${args.experimentKey}: removed ${del.count} assignments, ${keys.length} cache keys, ${ev.deletedCount} events`,
+      );
       return true;
     },
   },

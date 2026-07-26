@@ -4,24 +4,51 @@ import { startStandaloneServer } from "@apollo/server/standalone";
 import { typeDefs } from "./schema.js";
 import { resolvers } from "./resolvers/index.js";
 import { connectMongo } from "./db/mongo.js";
+import { log } from "./logger.js";
+
+// Best-effort operation label: the first top-level field (assignUser, experiments, …),
+// since the frontend sends anonymous operations.
+function opName(rc: any): string {
+  const sel = rc?.operation?.selectionSet?.selections?.[0];
+  const field = sel && sel.kind === "Field" ? sel.name?.value : undefined;
+  return field ?? rc?.operationName ?? rc?.operation?.operation ?? "operation";
+}
+
+// Logs every GraphQL operation + how long it took, so the container output shows the
+// request flow. Resolvers add their own [api:<name>] lines for the internal details.
+const loggingPlugin = {
+  async requestDidStart() {
+    const started = Date.now();
+    return {
+      async didResolveOperation(rc: any) {
+        log.info("graphql", `▶ ${rc.operation?.operation ?? "op"} ${opName(rc)}`);
+      },
+      async willSendResponse(rc: any) {
+        log.info("graphql", `■ ${opName(rc)} done in ${Date.now() - started}ms`);
+      },
+      async didEncounterErrors(rc: any) {
+        log.error("graphql", `${opName(rc)} failed`, rc.errors?.map((e: any) => e.message));
+      },
+    };
+  },
+};
 
 async function main() {
-  // Mongo needs an explicit connect (Prisma and Redis connect lazily on first use).
+  log.info("startup", "connecting to MongoDB…");
   await connectMongo();
 
-  const server = new ApolloServer({ typeDefs, resolvers });
+  const server = new ApolloServer({ typeDefs, resolvers, plugins: [loggingPlugin] });
 
   const port = Number(process.env.PORT ?? 4000);
   const { url } = await startStandaloneServer(server, {
     listen: { port },
-    // CORS is permissive here so the Next.js dev server (port 3000) can call us.
+    // CORS is permissive here so the static frontend can call us cross-origin.
   });
 
-  console.log(`🚀 GraphQL API ready at ${url}`);
-  console.log(`   Open it in a browser to explore the schema with Apollo Sandbox.`);
+  log.info("startup", `GraphQL API ready at ${url}`);
 }
 
 main().catch((err) => {
-  console.error("Failed to start API:", err);
+  log.error("startup", "failed to start API", err);
   process.exit(1);
 });

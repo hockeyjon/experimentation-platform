@@ -34,15 +34,21 @@ services:
     image: mongo:7
     container_name: experimentation-mongo
     restart: unless-stopped
+    # --quiet suppresses per-connection "accepted/ended" log spam (mostly the 5s
+    # healthcheck). Data operations are logged by the api service, not mongod.
+    command: ["mongod", "--quiet"]
     ports:
       - "27017:27017"
     volumes:
       - mongodata:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
+      # 30s steady-state keeps the log quiet; start_interval still probes fast at boot.
+      interval: 30s
       timeout: 5s
-      retries: 10
+      retries: 5
+      start_period: 30s
+      start_interval: 2s
 
   redis:
     image: redis:7

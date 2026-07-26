@@ -14,6 +14,7 @@ Run:
     pip install -r requirements.txt
     uvicorn main:app --reload        # docs at http://localhost:8000/docs
 """
+import logging
 import math
 import os
 
@@ -23,8 +24,13 @@ from pymongo import MongoClient
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://127.0.0.1:27017")
 MONGO_DB = os.environ.get("MONGO_DB", "experiments_events")
 
+# INFO logging so the container output shows the flow (view with `make logs`).
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [stats] %(message)s")
+log = logging.getLogger("stats")
+
 app = FastAPI(title="Experiment Stats Service")
 events = MongoClient(MONGO_URL)[MONGO_DB]["events"]
+log.info("stats service ready — reading events from %s/%s", MONGO_URL, MONGO_DB)
 
 
 def normal_cdf(x: float) -> float:
@@ -60,6 +66,7 @@ def variant_counts(experiment_key: str):
             counts[v]["exposures"] = r["n"]
         elif r["_id"]["t"] == "conversion":
             counts[v]["conversions"] = r["n"]
+    log.info("aggregated %d variant(s) for '%s'", len(counts), experiment_key)
     return counts
 
 
@@ -74,12 +81,15 @@ def significance(experiment_key: str):
     Compare each variant against the control (the variant with the most exposures) and
     report lift + statistical significance at alpha = 0.05.
     """
+    log.info("computing significance for '%s'", experiment_key)
     counts = variant_counts(experiment_key)
     if not counts:
+        log.info("no events for '%s' — nothing to compute", experiment_key)
         return {"experimentKey": experiment_key, "variants": [], "note": "no events"}
 
     # Treat the highest-exposure variant as the control baseline.
     control_key = max(counts, key=lambda k: counts[k]["exposures"])
+    log.info("baseline (control) = '%s'", control_key)
     c = counts[control_key]
     control_rate = c["conversions"] / c["exposures"] if c["exposures"] else 0.0
 
@@ -96,6 +106,7 @@ def significance(experiment_key: str):
             continue
         z, p = two_proportion_z_test(c["conversions"], c["exposures"], v["conversions"], v["exposures"])
         lift = (rate - control_rate) / control_rate if control_rate else 0.0
+        log.info("  %s vs %s: lift=%.1f%% p=%.4f significant=%s", key, control_key, lift * 100, p, p < 0.05)
         results.append({
             "variantKey": key, "isControl": False,
             "exposures": v["exposures"], "conversions": v["conversions"],
@@ -106,4 +117,5 @@ def significance(experiment_key: str):
             "significant": p < 0.05,
         })
 
+    log.info("significance done for '%s' (%d variant(s))", experiment_key, len(results))
     return {"experimentKey": experiment_key, "controlVariant": control_key, "variants": results}
