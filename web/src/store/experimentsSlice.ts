@@ -37,10 +37,20 @@ export interface AssignedUser {
   converted: boolean;
 }
 
+// Backend-sourced summary for one experiment (shape of the experimentOverview query).
+export interface ExperimentOverview {
+  key: string;
+  name: string;
+  status: Experiment["status"];
+  variantCount: number;
+  enrolledCount: number;
+}
+
 interface ExperimentsState {
   items: Experiment[];
   selectedKey: string | null;
   resultsByKey: Record<string, VariantResult[]>;
+  overviewByKey: Record<string, ExperimentOverview>;
   lastAssignment: { experimentKey: string; userId: string; variantKey: string; cached: boolean } | null;
   assignments: AssignedUser[];
   loading: boolean;
@@ -51,6 +61,7 @@ const initialState: ExperimentsState = {
   items: [],
   selectedKey: null,
   resultsByKey: {},
+  overviewByKey: {},
   lastAssignment: null,
   assignments: [],
   loading: false,
@@ -72,6 +83,15 @@ export const fetchResults = createAsyncThunk("experiments/fetchResults", async (
     { key },
   );
   return { key, variants: data.results.variants };
+});
+
+// Our new query — the backend summary for one experiment (status, variant count, enrolled count).
+export const fetchOverview = createAsyncThunk("experiments/fetchOverview", async (key: string) => {
+  const data = await gql<{ experimentOverview: ExperimentOverview | null }>(
+    `query($key:String!){ experimentOverview(experimentKey:$key){ key name status variantCount enrolledCount } }`,
+    { key },
+  );
+  return data.experimentOverview;
 });
 
 export const assignUser = createAsyncThunk(
@@ -144,6 +164,9 @@ const slice = createSlice({
       })
       .addCase(fetchResults.fulfilled, (state, action) => {
         state.resultsByKey[action.payload.key] = action.payload.variants;
+      })
+      .addCase(fetchOverview.fulfilled, (state, action) => {
+        if (action.payload) state.overviewByKey[action.payload.key] = action.payload;
       })
       // Clear any prior error when a new attempt starts, so stale errors don't linger.
       .addCase(assignUser.pending, (state) => {

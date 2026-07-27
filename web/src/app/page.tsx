@@ -8,18 +8,22 @@ import {
   assignUser,
   clearBucket,
   fetchExperiments,
+  fetchOverview,
   hydrateAssignments,
   logConversion,
   selectExperiment,
   setStatus,
   AssignedUser,
   Experiment,
+  ExperimentOverview,
   Variant,
 } from "@/store/experimentsSlice";
 
 export default function Dashboard() {
   const dispatch = useAppDispatch();
-  const { items, selectedKey, assignments, loading, error } = useAppSelector((s) => s.experiments);
+  const { items, selectedKey, assignments, overviewByKey, loading, error } = useAppSelector(
+    (s) => s.experiments,
+  );
 
   // Load experiments + restore the persisted buckets on mount.
   useEffect(() => {
@@ -28,6 +32,13 @@ export default function Dashboard() {
   }, [dispatch]);
 
   const selected = items.find((e) => e.key === selectedKey) ?? null;
+
+  // Fetch the backend overview when the experiment changes, or when the local enrolled
+  // count changes (enroll / seed / clear) — keeps its enrolledCount roughly in sync.
+  const enrolledLocal = assignments.filter((a) => a.experimentKey === selectedKey).length;
+  useEffect(() => {
+    if (selectedKey) dispatch(fetchOverview(selectedKey));
+  }, [selectedKey, enrolledLocal, dispatch]);
 
   return (
     <>
@@ -60,6 +71,7 @@ export default function Dashboard() {
               <ResultsCard
                 experiment={selected}
                 users={assignments.filter((a) => a.experimentKey === selected.key)}
+                overview={overviewByKey[selected.key]}
               />
               {/* key forces a fresh AssignCard (input, variant select, pill) per experiment */}
               <AssignCard key={selected.key} experimentKey={selected.key} variants={selected.variants} />
@@ -106,9 +118,13 @@ function VariantTag(props: { isControl: boolean }) {
   );
 }
 
-function ResultsCard(props: { experiment: Experiment; users: AssignedUser[] }) {
+function ResultsCard(props: {
+  experiment: Experiment;
+  users: AssignedUser[];
+  overview?: ExperimentOverview;
+}) {
   const dispatch = useAppDispatch();
-  const { experiment, users } = props;
+  const { experiment, users, overview } = props;
   const running = experiment.status === "RUNNING";
 
   // The control variant is the one flagged in the experiment definition (not inferred).
@@ -131,6 +147,15 @@ function ResultsCard(props: { experiment: Experiment; users: AssignedUser[] }) {
         <span className={`badge ${experiment.status}`}>{experiment.status}</span>
         <InfoButton text={experiment.description ?? "No description."} />
       </h3>
+
+      {overview && (
+        <p className="stack-note">
+          Backend summary:{" "}
+          <strong>{overview.enrolledCount}</strong> enrolled ·{" "}
+          <strong>{overview.variantCount}</strong> variants · status{" "}
+          <strong>{overview.status}</strong>
+        </p>
+      )}
 
       {users.length === 0 ? (
         <p className="muted">No customers enrolled yet — use the enrollment tools below.</p>

@@ -53,6 +53,15 @@ export const typeDefs = /* GraphQL */ `
     variants: [VariantResult!]!
   }
 
+  # A compact, at-a-glance summary of one experiment.
+  type ExperimentOverview {
+    key: String!
+    name: String!
+    status: ExperimentStatus!
+    variantCount: Int!
+    enrolledCount: Int!
+  }
+
   input VariantInput {
     key: String!
     name: String!
@@ -74,6 +83,8 @@ export const typeDefs = /* GraphQL */ `
     assignment(experimentKey: String!, userId: String!): Assignment
     # Aggregate exposures/conversions per variant from the event log.
     results(experimentKey: String!): ExperimentResults!
+    # A compact summary for one experiment (status, variant count, enrolled count).
+    experimentOverview(experimentKey: String!): ExperimentOverview
   }
 
   type Mutation {

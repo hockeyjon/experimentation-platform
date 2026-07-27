@@ -49,6 +49,29 @@ export const resolvers = {
         include: { variants: true },
       }),
 
+    // Combines a Postgres row (experiment + its variants) with a Postgres count
+    // (how many users are assigned). Returns null for an unknown key.
+    experimentOverview: async (_: unknown, args: { experimentKey: string }) => {
+      log.info("experimentOverview", `summary for ${args.experimentKey}`);
+      const experiment = await prisma.experiment.findUnique({
+        where: { key: args.experimentKey },
+        include: { variants: true },
+      });
+      if (!experiment) return null;
+
+      const enrolledCount = await prisma.assignment.count({
+        where: { experimentId: experiment.id },
+      });
+
+      return {
+        key: experiment.key,
+        name: experiment.name,
+        status: experiment.status,
+        variantCount: experiment.variants.length,
+        enrolledCount,
+      };
+    },
+
     // Read-only lookup: Redis first, then Postgres. Returns null if the user has
     // never been assigned (use the assignUser mutation to create one).
     assignment: async (_: unknown, args: { experimentKey: string; userId: string }) => {
