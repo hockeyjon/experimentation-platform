@@ -29,11 +29,11 @@ RSYNC_EXCLUDES := --exclude node_modules --exclude .next --exclude out --exclude
                   --exclude .venv --exclude web --exclude terraform --exclude .env --exclude .DS_Store
 
 .DEFAULT_GOAL := help
-.PHONY: help build sync invalidate frontend backend seed deploy ssh ps logs logs-all start stop status
+.PHONY: help build sync invalidate frontend backend seed deploy ssh ps list-backend logs logs-all logs-fresh logs-reset start stop status
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
 # --- frontend --------------------------------------------------------------
 build: ## Build the static frontend with the production API URL baked in
@@ -78,11 +78,21 @@ ssh: ## Open an SSH session on the instance
 ps: ## Show the status of the backend containers
 	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) ps"
 
+list-backend: ## List the Docker containers running on the EC2 instance (host-wide, not just the compose stack)
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) \
+		"docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'"
+
 logs: ## Tail the app-flow logs only (api + stats — no datastore noise)
 	ssh -t -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) logs -f --tail=100 api stats"
 
 logs-all: ## Tail ALL container logs (api, stats, caddy, postgres, mongo, redis)
 	ssh -t -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) logs -f --tail=100"
+
+logs-fresh: ## Tail app logs from NOW (no history) — clean view for a demo, deletes nothing
+	ssh -t -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) logs -f --tail=0 api stats"
+
+logs-reset: ## Actually WIPE api+stats logs by recreating those containers (brief API blip)
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) up -d --force-recreate api stats && echo 'api + stats recreated — logs cleared'"
 
 start: ## Start the EC2 instance
 	aws ec2 start-instances --instance-ids $(INSTANCE_ID) --region $(REGION) \

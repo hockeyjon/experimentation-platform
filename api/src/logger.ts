@@ -10,6 +10,11 @@ export const log = {
     if (extra !== undefined) console.log(`${ts()} [api:${scope}] ${msg}`, extra);
     else console.log(`${ts()} [api:${scope}] ${msg}`);
   },
+  // Write-path logging: the exact payload we hand to Postgres/Mongo, serialized on
+  // one line so a write is easy to spot (and grep) in the interleaved container logs.
+  write(store: "postgres" | "mongo" | "redis", op: string, payload: unknown): void {
+    console.log(`${ts()} [api:${store}] WRITE ${op} ${JSON.stringify(payload)}`);
+  },
   error(scope: string, msg: string, extra?: unknown): void {
     if (extra !== undefined) console.error(`${ts()} [api:${scope}] ✗ ${msg}`, extra);
     else console.error(`${ts()} [api:${scope}] ✗ ${msg}`);

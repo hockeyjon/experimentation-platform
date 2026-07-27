@@ -12,4 +12,5 @@ __pycache__/
 *.tfstate
 *.tfstate.*
 terraform.tfvars
-INTERVIEW-NOTES.md
+# Private interview prep — never pushed
+notes/
