@@ -14,6 +14,7 @@ const SCOPE_COLORS: Record<string, string> = {
   graphql: "\x1b[34m", // blue
   mongo: "\x1b[38;5;208m", // orange (256-color — there is no basic ANSI orange)
   postgres: "\x1b[33m", // yellow
+  redis: "\x1b[38;5;141m", // violet (256-color, like orange)
 };
 
 const colorEnabled = !process.env.NO_COLOR;

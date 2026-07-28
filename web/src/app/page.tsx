@@ -2,7 +2,7 @@
 // The dashboard. A client component that reads state from Redux and dispatches the
 // async thunks (which call the GraphQL API). The enrolled-customer board is the
 // source of truth for the results table, and it persists across reloads (localStorage).
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAppDispatch, useAppSelector, loadPersistedAssignments } from "@/store";
 import {
   assignUser,
@@ -116,6 +116,46 @@ async function resetBackend(base: string, token: string): Promise<string> {
   }
 }
 
+// The api container colors its [api:<scope>] tags with ANSI escapes so `make logs` is
+// scannable by subsystem. A <pre> renders those escapes as literal junk, so translate the
+// codes the logger emits into spans. Codes we don't map are dropped rather than shown.
+const ANSI_COLOR: Record<string, string> = {
+  "32": "#4ade80", // green  — assignUser
+  "34": "#60a5fa", // blue   — graphql
+  "33": "#facc15", // yellow — postgres
+  "38;5;208": "#fb923c", // orange — mongo
+  "38;5;141": "#a78bfa", // violet — redis
+};
+
+function AnsiLine({ text }: { text: string }) {
+  // Capturing split → [text, code, text, code, …]: odd entries are the SGR codes.
+  const parts = text.split(/\x1b\[([0-9;]*)m/);
+  const out: ReactNode[] = [];
+  let color: string | undefined;
+  parts.forEach((part, i) => {
+    if (i % 2 === 1) {
+      color = ANSI_COLOR[part]; // "0" (reset) and anything unmapped → back to default
+      return;
+    }
+    if (!part) return;
+    out.push(
+      color ? (
+        <span key={i} style={{ color }}>
+          {part}
+        </span>
+      ) : (
+        part
+      ),
+    );
+  });
+  return (
+    <>
+      {out}
+      {"\n"}
+    </>
+  );
+}
+
 // The "Backend" tab: opens a WebSocket to the log-stream service and shows redacted,
 // time-limited backend logs. No history is fetched (tail=0), and the stream auto-closes
 // after 5 minutes so it can never sit open burning server I/O.
@@ -214,7 +254,7 @@ function BackendLogs({ active }: { active: boolean }) {
       </div>
       <pre className="log-view" ref={viewRef} aria-busy={resetting}>
         {lines.length
-          ? lines.join("\n")
+          ? lines.map((line, i) => <AnsiLine key={i} text={line} />)
           : resetting
             ? "Recreating api + stats…"
             : 'Click "Stream backend logs" to begin.'}
