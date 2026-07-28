@@ -2,7 +2,7 @@
 // The dashboard. A client component that reads state from Redux and dispatches the
 // async thunks (which call the GraphQL API). The enrolled-customer board is the
 // source of truth for the results table, and it persists across reloads (localStorage).
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useAppDispatch, useAppSelector, loadPersistedAssignments } from "@/store";
 import {
   assignUser,
@@ -94,6 +94,12 @@ export default function Dashboard() {
   );
 }
 
+// A restart isn't done when the container starts — node still runs `prisma db push` and
+// boots. This is the line the api logs when it is actually serving; it must stay in sync
+// with the log.info("startup", …) call in api/src/index.ts.
+const API_READY = /GraphQL API ready/;
+const READY_TIMEOUT_S = 60;
+
 // Ask the log-stream service to recreate api + stats before we attach — the `make
 // logs-reset` equivalent. Always resolves to a line for the log view: a failed or throttled
 // reset is worth showing, but it never blocks the stream (seeing the logs is the point).
@@ -157,54 +163,104 @@ function AnsiLine({ text }: { text: string }) {
 }
 
 // Stands in for window.confirm: browsers prefix native dialogs with "<origin> says" and
-// give no way to suppress it, so the consent step is rendered in-page instead. Keeps the
-// two things the native dialog gave us for free — Escape to dismiss, and focus on the
-// confirming action.
-function ConfirmDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
-  const confirmRef = useRef<HTMLButtonElement | null>(null);
+// give no way to suppress it, so consent steps are rendered in-page instead. Keeps the two
+// things the native dialog gave us for free — Escape to dismiss, and focus on the default
+// action (whichever child button carries autoFocus).
+function Modal(props: {
+  title: string;
+  onDismiss: () => void;
+  children: ReactNode;
+  actions: ReactNode;
+}) {
+  const titleId = useId();
 
-  useEffect(() => confirmRef.current?.focus(), []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") props.onDismiss();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  }, [props]);
 
   return (
     // Backdrop click dismisses; the stopPropagation keeps clicks inside the panel from doing so.
-    <div className="modal-backdrop" onClick={onCancel}>
+    <div className="modal-backdrop" onClick={props.onDismiss}>
       <div
         className="modal"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="stream-confirm-title"
+        aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 id="stream-confirm-title">Stream backend logs</h3>
-        <p>
-          For demonstration only — restarts the backend services so the log stream starts fresh
-          from boot.
-        </p>
-        <p>
-          Backend logs will stream for 5 minutes, then automatically disconnect (this keeps server
-          load bounded).
-        </p>
-        <p>
-          Logs are redacted server-side — database IDs and emails stripped (user handles are
-          generic demo values).
-        </p>
-        <div className="modal-actions">
+        <h3 id={titleId}>{props.title}</h3>
+        {props.children}
+        <div className="modal-actions">{props.actions}</div>
+      </div>
+    </div>
+  );
+}
+
+// Step 1: what streaming entails at all.
+function ConfirmDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
+  return (
+    <Modal
+      title="Stream backend logs"
+      onDismiss={onCancel}
+      actions={
+        <>
           <button className="ghost" onClick={onCancel}>
             Cancel
           </button>
-          <button className="primary" ref={confirmRef} onClick={onConfirm}>
+          <button className="primary" autoFocus onClick={onConfirm}>
             Continue
           </button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <p>
+        For demonstration only — the next step offers to restart the backend services so the log
+        stream starts fresh from boot.
+      </p>
+      <p>
+        Backend logs will stream for 5 minutes, then automatically disconnect (this keeps server
+        load bounded).
+      </p>
+      <p>
+        Logs are redacted server-side — database IDs and emails stripped (user handles are generic
+        demo values).
+      </p>
+    </Modal>
+  );
+}
+
+// Step 2: start clean, or attach to whatever is already running.
+function RestartDialog(props: { onDismiss: () => void; onRestart: () => void; onContinue: () => void }) {
+  return (
+    <Modal
+      title="Restart the backend first?"
+      onDismiss={props.onDismiss}
+      actions={
+        <>
+          <button className="warn" onClick={props.onRestart}>
+            Restart
+          </button>
+          <button className="primary" autoFocus onClick={props.onContinue}>
+            Continue
+          </button>
+        </>
+      }
+    >
+      <p>Would you like to restart, or continue logging from its current state?</p>
+      <p>
+        <strong>Restart</strong> clears the enrolled customers from every experiment, then recreates
+        the api + stats containers — the stream begins on an empty log. Takes about 20 seconds, and
+        the API is unavailable while it happens.
+      </p>
+      <p>
+        <strong>Continue</strong> attaches to the services as they are and streams from now,
+        changing nothing.
+      </p>
+    </Modal>
   );
 }
 
@@ -212,20 +268,33 @@ function ConfirmDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfir
 // time-limited backend logs. No history is fetched (tail=0), and the stream auto-closes
 // after 5 minutes so it can never sit open burning server I/O.
 function BackendLogs({ active }: { active: boolean }) {
+  const dispatch = useAppDispatch();
+  const experiments = useAppSelector((s) => s.experiments.items);
   const [streaming, setStreaming] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [choosing, setChoosing] = useState(false);
+  const [busyLabel, setBusyLabel] = useState("");
   const [lines, setLines] = useState<string[]>([]);
   const [remaining, setRemaining] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const readyRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewRef = useRef<HTMLPreElement | null>(null);
+
+  // Drop the spinner: the api announced itself, or we gave up waiting.
+  const clearBusy = () => {
+    if (readyRef.current) clearTimeout(readyRef.current);
+    readyRef.current = null;
+    setResetting(false);
+  };
 
   const stop = () => {
     wsRef.current?.close();
     wsRef.current = null;
     if (tickRef.current) clearInterval(tickRef.current);
     tickRef.current = null;
+    clearBusy(); // never leave a spinner behind if the stream dies mid-boot
     setStreaming(false);
   };
 
@@ -239,29 +308,65 @@ function BackendLogs({ active }: { active: boolean }) {
     if (viewRef.current) viewRef.current.scrollTop = viewRef.current.scrollHeight;
   }, [lines, active]);
 
-  async function start() {
+  // "Clear buckets" for every experiment — the same mutation the Frontend tab's button
+  // fires, applied across the board so a restarted demo starts with nobody enrolled.
+  async function clearAllBuckets(): Promise<string> {
+    try {
+      await Promise.all(experiments.map((e) => dispatch(clearBucket(e.key)).unwrap()));
+      return `[logstream] cleared enrolled customers from ${experiments.length} experiment(s)`;
+    } catch {
+      return "[logstream] clear buckets failed — continuing";
+    }
+  }
+
+  async function start(restart: boolean) {
     // Derive the endpoints from the GraphQL URL: https://api…/ → wss://api…/logstream
     const api = process.env.NEXT_PUBLIC_GRAPHQL_URL ?? "https://api.gunbarrelstudio.com/";
     const base = api.replace(/\/+$/, "");
     const wsUrl = base.replace(/^http/, "ws") + "/logstream";
     const token = process.env.NEXT_PUBLIC_LOGSTREAM_TOKEN ?? "let-me-see-the-logs";
 
-    // Recreate api + stats first (the `make logs-reset` equivalent) so the stream starts on
-    // an empty log. The spinner covers this; streaming proceeds either way.
-    setLines([]);
-    setResetting(true);
-    const note = await resetBackend(base, token);
-    setResetting(false);
+    const notes: string[] = [];
+    if (restart) {
+      // Buckets first, while the API is still up — recreating the containers afterwards
+      // wipes the log lines the clearing itself produces. The spinner covers both steps,
+      // and streaming proceeds even if either one fails.
+      setLines([]);
+      setResetting(true);
+      setBusyLabel("Clearing enrolled customers…");
+      notes.push(await clearAllBuckets());
+      setBusyLabel("Recreating api + stats…");
+      notes.push(await resetBackend(base, token));
+      // The container is started but node still has to run `prisma db push` and boot, so
+      // the spinner stays up until the api announces itself in the stream below.
+      setBusyLabel("Waiting for the api to report ready…");
+    } else {
+      notes.push("[logstream] continuing from the current state — nothing restarted");
+    }
 
     const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`);
     wsRef.current = ws;
-    setLines([note]);
+    setLines(notes);
     setStreaming(true);
     setRemaining(300);
     tickRef.current = setInterval(() => setRemaining((r) => Math.max(0, r - 1)), 1000);
 
+    if (restart) {
+      // Safety net: if that line never arrives (a boot failure, or the message changes),
+      // stop spinning rather than hanging forever.
+      readyRef.current = setTimeout(() => {
+        readyRef.current = null;
+        setResetting(false);
+        setLines((prev) => [...prev, `[logstream] api did not report ready within ${READY_TIMEOUT_S}s`]);
+      }, READY_TIMEOUT_S * 1000);
+    }
+
     // Cap the buffer at 800 lines so a long stream can't grow memory without bound.
-    ws.onmessage = (e) => setLines((prev) => [...prev, String(e.data)].slice(-800));
+    ws.onmessage = (e) => {
+      const line = String(e.data);
+      if (API_READY.test(line)) clearBusy();
+      setLines((prev) => [...prev, line].slice(-800));
+    };
     ws.onerror = () => setLines((prev) => [...prev, "[logstream] connection error"]);
     ws.onclose = stop;
   }
@@ -277,7 +382,7 @@ function BackendLogs({ active }: { active: boolean }) {
               Stream backend logs
             </button>
             <span className="muted">
-              <span className="spinner" aria-hidden="true" /> recreating api + stats…
+              <span className="spinner" aria-hidden="true" /> {busyLabel}
             </span>
           </>
         ) : streaming ? (
@@ -293,23 +398,37 @@ function BackendLogs({ active }: { active: boolean }) {
           </button>
         )}
         <span className="muted small">
-          Live api + stats logs, redacted server-side (DB IDs + emails stripped). Recreates api +
-          stats on start; auto-disconnects after 5 minutes.
+          Live api + stats logs, redacted server-side (DB IDs + emails stripped). Optionally
+          restarts the backend on start; auto-disconnects after 5 minutes.
         </span>
       </div>
       <pre className="log-view" ref={viewRef} aria-busy={resetting}>
         {lines.length
           ? lines.map((line, i) => <AnsiLine key={i} text={line} />)
           : resetting
-            ? "Recreating api + stats…"
+            ? busyLabel
             : 'Click "Stream backend logs" to begin.'}
       </pre>
+      {/* Two steps: consent to streaming at all, then choose whether to start clean. */}
       {confirming && (
         <ConfirmDialog
           onCancel={() => setConfirming(false)}
           onConfirm={() => {
             setConfirming(false);
-            start();
+            setChoosing(true);
+          }}
+        />
+      )}
+      {choosing && (
+        <RestartDialog
+          onDismiss={() => setChoosing(false)}
+          onRestart={() => {
+            setChoosing(false);
+            start(true);
+          }}
+          onContinue={() => {
+            setChoosing(false);
+            start(false);
           }}
         />
       )}
@@ -375,39 +494,40 @@ function ResultsCard(props: { experiment: Experiment; users: AssignedUser[] }) {
         <InfoButton text={experiment.description ?? "No description."} />
       </h3>
 
-      {users.length === 0 ? (
-        <p className="muted">No customers enrolled yet — use the enrollment tools below.</p>
-      ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Variant</th>
-              <th>Enrolled</th>
-              <th>Successes</th>
-              <th>Success rate</th>
-              <th>Lift vs control</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(({ v, exposures, conversions, rate }) => {
-              const isControl = v.key === controlVariant?.key;
-              const lift = controlRate > 0 && !isControl ? (rate - controlRate) / controlRate : 0;
-              return (
-                <tr key={v.key}>
-                  <td>
-                    {v.name} <VariantTag isControl={isControl} />
-                  </td>
-                  <td className="num">{exposures}</td>
-                  <td className="num">{conversions}</td>
-                  <td className="num">{(rate * 100).toFixed(1)}%</td>
-                  <td className={`num lift ${lift > 0 ? "up" : lift < 0 ? "down" : ""}`}>
-                    {isControl ? "—" : `${lift > 0 ? "+" : ""}${(lift * 100).toFixed(1)}%`}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      {/* The table always renders. With nobody enrolled every row is simply zeroed — the
+          shape of the results stays on screen instead of appearing once traffic arrives. */}
+      <table>
+        <thead>
+          <tr>
+            <th>Variant</th>
+            <th>Enrolled</th>
+            <th>Successes</th>
+            <th>Success rate</th>
+            <th>Lift vs control</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({ v, exposures, conversions, rate }) => {
+            const isControl = v.key === controlVariant?.key;
+            const lift = controlRate > 0 && !isControl ? (rate - controlRate) / controlRate : 0;
+            return (
+              <tr key={v.key}>
+                <td>
+                  {v.name} <VariantTag isControl={isControl} />
+                </td>
+                <td className="num">{exposures}</td>
+                <td className="num">{conversions}</td>
+                <td className="num">{(rate * 100).toFixed(1)}%</td>
+                <td className={`num lift ${lift > 0 ? "up" : lift < 0 ? "down" : ""}`}>
+                  {isControl ? "—" : `${lift > 0 ? "+" : ""}${(lift * 100).toFixed(1)}%`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {users.length === 0 && (
+        <p className="muted small">No customers enrolled yet — use the enrollment tools below.</p>
       )}
 
       <div className="card-actions">

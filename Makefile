@@ -39,8 +39,18 @@ help: ## List available targets
 build: ## Build the static frontend with the production API URL baked in
 	cd web && NEXT_PUBLIC_GRAPHQL_URL="$(API_URL)" npm run build
 
-sync: ## Upload web/out/ to the S3 bucket
-	aws s3 sync web/out/ s3://$(BUCKET)/ --delete
+# Two passes, because the two kinds of file want opposite caching. Chunk filenames under
+# _next/static are content-hashed, so they're immutable and safe to cache forever. The HTML
+# is NOT hashed and must revalidate on every load — served without a Cache-Control header it
+# falls into browser heuristic caching, which pins visitors to an old build's chunk hashes
+# long after `make invalidate` has cleared CloudFront (an invalidation can't reach a browser).
+# Assets upload first so the new HTML never references a chunk that isn't in the bucket yet.
+sync: ## Upload web/out/ to S3 (immutable hashed assets, always-revalidate HTML)
+	aws s3 sync web/out/_next/static/ s3://$(BUCKET)/_next/static/ \
+		--cache-control "public,max-age=31536000,immutable"
+	aws s3 sync web/out/ s3://$(BUCKET)/ --delete \
+		--exclude "_next/static/*" \
+		--cache-control "no-cache"
 
 invalidate: ## Bust the CloudFront cache, then poll until the invalidation completes
 	@id=$$(aws cloudfront create-invalidation --distribution-id $(DISTRIBUTION_ID) --paths "/*" --query 'Invalidation.Id' --output text); \
