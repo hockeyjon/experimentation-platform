@@ -32,6 +32,11 @@ services:
       MONGO_DB: experiments_events
       REDIS_URL: redis://redis:6379
       PORT: "4000"
+      # Keep the boot output clean: the Prisma CLI otherwise prints a boxed "Update
+      # available 6.x -> 7.x" banner on every `db push`, which lands in the log stream.
+      # CHECKPOINT_DISABLE also skips the outbound version-check request at startup.
+      PRISMA_HIDE_UPDATE_MESSAGE: "true"
+      CHECKPOINT_DISABLE: "1"
     # Create tables (idempotent) before starting the server.
     command: sh -c "npx prisma db push --skip-generate && npm run start"
     depends_on:

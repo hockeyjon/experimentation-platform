@@ -156,12 +156,65 @@ function AnsiLine({ text }: { text: string }) {
   );
 }
 
+// Stands in for window.confirm: browsers prefix native dialogs with "<origin> says" and
+// give no way to suppress it, so the consent step is rendered in-page instead. Keeps the
+// two things the native dialog gave us for free — Escape to dismiss, and focus on the
+// confirming action.
+function ConfirmDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => confirmRef.current?.focus(), []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  return (
+    // Backdrop click dismisses; the stopPropagation keeps clicks inside the panel from doing so.
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="stream-confirm-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 id="stream-confirm-title">Stream backend logs</h3>
+        <p>
+          For demonstration only — restarts the backend services so the log stream starts fresh
+          from boot.
+        </p>
+        <p>
+          Backend logs will stream for 5 minutes, then automatically disconnect (this keeps server
+          load bounded).
+        </p>
+        <p>
+          Logs are redacted server-side — database IDs and emails stripped (user handles are
+          generic demo values).
+        </p>
+        <div className="modal-actions">
+          <button className="ghost" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="primary" ref={confirmRef} onClick={onConfirm}>
+            Continue
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // The "Backend" tab: opens a WebSocket to the log-stream service and shows redacted,
 // time-limited backend logs. No history is fetched (tail=0), and the stream auto-closes
 // after 5 minutes so it can never sit open burning server I/O.
 function BackendLogs({ active }: { active: boolean }) {
   const [streaming, setStreaming] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [lines, setLines] = useState<string[]>([]);
   const [remaining, setRemaining] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
@@ -187,14 +240,6 @@ function BackendLogs({ active }: { active: boolean }) {
   }, [lines, active]);
 
   async function start() {
-    const ok = window.confirm(
-      "Backend logs will stream for 5 minutes, then automatically disconnect (this keeps " +
-        "server load bounded).  Logs are " +
-        "redacted server-side — database IDs and emails stripped (user handles are generic " +
-        "demo values). Continue?",
-    );
-    if (!ok) return;
-
     // Derive the endpoints from the GraphQL URL: https://api…/ → wss://api…/logstream
     const api = process.env.NEXT_PUBLIC_GRAPHQL_URL ?? "https://api.gunbarrelstudio.com/";
     const base = api.replace(/\/+$/, "");
@@ -243,7 +288,7 @@ function BackendLogs({ active }: { active: boolean }) {
             <span className="muted">disconnecting in {mmss}</span>
           </>
         ) : (
-          <button className="primary" onClick={start}>
+          <button className="primary" onClick={() => setConfirming(true)}>
             Stream backend logs
           </button>
         )}
@@ -259,6 +304,15 @@ function BackendLogs({ active }: { active: boolean }) {
             ? "Recreating api + stats…"
             : 'Click "Stream backend logs" to begin.'}
       </pre>
+      {confirming && (
+        <ConfirmDialog
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => {
+            setConfirming(false);
+            start();
+          }}
+        />
+      )}
     </div>
   );
 }

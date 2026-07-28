@@ -59,9 +59,13 @@ frontend: ## Full frontend deploy: build -> sync -> invalidate
 	$(MAKE) invalidate
 
 # --- backend ---------------------------------------------------------------
+# Caddy is recreated explicitly on every deploy. rsync replaces ./Caddyfile with a NEW
+# inode, and Docker's single-file bind mount follows the inode the container started with —
+# so `up -d` alone leaves caddy serving the old routes indefinitely (a `caddy reload` can't
+# help either: the file *inside* the container really is the stale one).
 backend: ## Deploy backend: rsync code to EC2 and rebuild the Docker stack
 	rsync -avz --delete $(RSYNC_EXCLUDES) -e "ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new" ./ $(EC2_USER)@$(EC2_HOST):$(REMOTE_DIR)/
-	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) up -d --build"
+	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) up -d --build && $(COMPOSE) up -d --force-recreate caddy"
 
 seed: ## Seed the production database (sample experiments + simulated traffic)
 	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) exec -T api npm run seed"
