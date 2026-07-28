@@ -80,7 +80,7 @@ ps: ## Show the status of the backend containers
 
 list-backend: ## List the Docker containers running on the EC2 instance (host-wide, not just the compose stack)
 	ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) \
-		"docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'"
+		"printf '\n\n'; docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}';printf '\n\n'"
 
 logs: ## Tail the app-flow logs only (api + stats — no datastore noise)
 	ssh -t -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST) "cd $(REMOTE_DIR)/deploy && $(COMPOSE) logs -f --tail=100 api stats"

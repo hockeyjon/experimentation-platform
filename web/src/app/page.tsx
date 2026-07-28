@@ -20,6 +20,7 @@ import {
 export default function Dashboard() {
   const dispatch = useAppDispatch();
   const { items, selectedKey, assignments, loading, error } = useAppSelector((s) => s.experiments);
+  const [tab, setTab] = useState<"frontend" | "backend">("frontend");
 
   // Load experiments + restore the persisted buckets on mount.
   useEffect(() => {
@@ -36,7 +37,25 @@ export default function Dashboard() {
         <span className="tag">Next.js · Redux · GraphQL · Prisma · Postgres · Mongo · Redis</span>
       </div>
 
-      <div className="layout">
+      <div className="tabbar">
+        <button
+          className={`tab ${tab === "frontend" ? "active" : ""}`}
+          onClick={() => setTab("frontend")}
+        >
+          Frontend
+        </button>
+        <button
+          className={`tab ${tab === "backend" ? "active" : ""}`}
+          onClick={() => setTab("backend")}
+        >
+          Backend
+        </button>
+      </div>
+
+      {/* Both tabs stay mounted; we only hide the inactive one. That keeps the log
+          WebSocket alive while you work in the Frontend tab, so the Backend tab
+          captures the very logs your frontend actions produce. */}
+      <div className="layout" style={{ display: tab === "frontend" ? "grid" : "none" }}>
         <aside className="sidebar">
           <h2>Experiments</h2>
           {loading && <p className="muted">Loading…</p>}
@@ -70,7 +89,137 @@ export default function Dashboard() {
           )}
         </main>
       </div>
+      <BackendLogs active={tab === "backend"} />
     </>
+  );
+}
+
+// Ask the log-stream service to recreate api + stats before we attach — the `make
+// logs-reset` equivalent. Always resolves to a line for the log view: a failed or throttled
+// reset is worth showing, but it never blocks the stream (seeing the logs is the point).
+async function resetBackend(base: string, token: string): Promise<string> {
+  try {
+    const res = await fetch(`${base}/logstream/reset?token=${encodeURIComponent(token)}`, {
+      method: "POST",
+    });
+    if (res.ok) {
+      const { recreated } = await res.json();
+      return `[logstream] recreated ${recreated.join(", ")} — streaming from a fresh boot`;
+    }
+    if (res.status === 429) {
+      const { retryInSeconds } = await res.json();
+      return `[logstream] reset skipped — on cooldown for another ${retryInSeconds}s`;
+    }
+    return `[logstream] reset failed (${res.status}) — streaming anyway`;
+  } catch {
+    return "[logstream] reset request failed — streaming anyway";
+  }
+}
+
+// The "Backend" tab: opens a WebSocket to the log-stream service and shows redacted,
+// time-limited backend logs. No history is fetched (tail=0), and the stream auto-closes
+// after 5 minutes so it can never sit open burning server I/O.
+function BackendLogs({ active }: { active: boolean }) {
+  const [streaming, setStreaming] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [lines, setLines] = useState<string[]>([]);
+  const [remaining, setRemaining] = useState(0);
+  const wsRef = useRef<WebSocket | null>(null);
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const viewRef = useRef<HTMLPreElement | null>(null);
+
+  const stop = () => {
+    wsRef.current?.close();
+    wsRef.current = null;
+    if (tickRef.current) clearInterval(tickRef.current);
+    tickRef.current = null;
+    setStreaming(false);
+  };
+
+  // Only tear the stream down on real unmount (leaving the page) — NOT on tab switch,
+  // so the stream keeps running in the background while you use the Frontend tab.
+  useEffect(() => () => stop(), []);
+
+  // Keep the newest line in view — also re-scroll when you switch back to this tab
+  // (a hidden <pre> has no scroll height, so it needs a nudge once it's visible again).
+  useEffect(() => {
+    if (viewRef.current) viewRef.current.scrollTop = viewRef.current.scrollHeight;
+  }, [lines, active]);
+
+  async function start() {
+    const ok = window.confirm(
+      "Backend logs will stream for 5 minutes, then automatically disconnect (this keeps " +
+        "server load bounded).  Logs are " +
+        "redacted server-side — database IDs and emails stripped (user handles are generic " +
+        "demo values). Continue?",
+    );
+    if (!ok) return;
+
+    // Derive the endpoints from the GraphQL URL: https://api…/ → wss://api…/logstream
+    const api = process.env.NEXT_PUBLIC_GRAPHQL_URL ?? "https://api.gunbarrelstudio.com/";
+    const base = api.replace(/\/+$/, "");
+    const wsUrl = base.replace(/^http/, "ws") + "/logstream";
+    const token = process.env.NEXT_PUBLIC_LOGSTREAM_TOKEN ?? "let-me-see-the-logs";
+
+    // Recreate api + stats first (the `make logs-reset` equivalent) so the stream starts on
+    // an empty log. The spinner covers this; streaming proceeds either way.
+    setLines([]);
+    setResetting(true);
+    const note = await resetBackend(base, token);
+    setResetting(false);
+
+    const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`);
+    wsRef.current = ws;
+    setLines([note]);
+    setStreaming(true);
+    setRemaining(300);
+    tickRef.current = setInterval(() => setRemaining((r) => Math.max(0, r - 1)), 1000);
+
+    // Cap the buffer at 800 lines so a long stream can't grow memory without bound.
+    ws.onmessage = (e) => setLines((prev) => [...prev, String(e.data)].slice(-800));
+    ws.onerror = () => setLines((prev) => [...prev, "[logstream] connection error"]);
+    ws.onclose = stop;
+  }
+
+  const mmss = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`;
+
+  return (
+    <div className="backend-logs" style={{ display: active ? "flex" : "none" }}>
+      <div className="backend-toolbar">
+        {resetting ? (
+          <>
+            <button className="primary" disabled>
+              Stream backend logs
+            </button>
+            <span className="muted">
+              <span className="spinner" aria-hidden="true" /> recreating api + stats…
+            </span>
+          </>
+        ) : streaming ? (
+          <>
+            <button className="warn" onClick={stop}>
+              Stop
+            </button>
+            <span className="muted">disconnecting in {mmss}</span>
+          </>
+        ) : (
+          <button className="primary" onClick={start}>
+            Stream backend logs
+          </button>
+        )}
+        <span className="muted small">
+          Live api + stats logs, redacted server-side (DB IDs + emails stripped). Recreates api +
+          stats on start; auto-disconnects after 5 minutes.
+        </span>
+      </div>
+      <pre className="log-view" ref={viewRef} aria-busy={resetting}>
+        {lines.length
+          ? lines.join("\n")
+          : resetting
+            ? "Recreating api + stats…"
+            : 'Click "Stream backend logs" to begin.'}
+      </pre>
+    </div>
   );
 }
 

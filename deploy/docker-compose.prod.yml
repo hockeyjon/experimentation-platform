@@ -48,6 +48,29 @@ services:
     depends_on:
       mongo: { condition: service_healthy }
 
+  # Streams REDACTED api+stats logs over a WebSocket (Caddy proxies /logstream here).
+  logstream:
+    build: ../logstream
+    restart: unless-stopped
+    environment:
+      # Not real secrets (the token ships in the public bundle) — they only deter casual
+      # access. Redaction + the time/connection limits are the actual protection.
+      LOGSTREAM_TOKEN: ${LOGSTREAM_TOKEN:-let-me-see-the-logs}
+      ALLOWED_ORIGIN: https://experimentation.gunbarrelstudio.com
+      MAX_STREAM_SECONDS: "300"
+      # Minimum gap between /logstream/reset recreates of api + stats.
+      RESET_COOLDOWN_SECONDS: "30"
+    volumes:
+      # Docker API access: tails the api/stats logs, and recreates those two containers
+      # for /logstream/reset. NOTE: `:ro` restricts the socket file, NOT the API — the
+      # Docker API has no read-only mode, so this mount grants broad Docker control.
+      # Acceptable for an isolated demo; a hardened setup would put a socket proxy
+      # (e.g. tecnativa/docker-socket-proxy) in front with only the needed endpoints.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - api
+      - stats
+
   postgres:
     image: postgres:16
     restart: unless-stopped

@@ -1,8 +1,27 @@
 # Experimentation Platform
 
 A working, full-stack A/B experimentation platform, a compact "mini LaunchDarkly/Optimizely"
-that runs locally and deploys to AWS. It's small on purpose (one clean vertical slice), but
-every technology has a real reason to be here.
+that runs locally and deploys to AWS. 
+
+## See the full stack live — two windows, side by side
+
+The app has two tabs: **Frontend** (the dashboard) and **Backend**, which streams the API's real
+logs over a WebSocket. The best way to see the whole stack work is to watch a single request travel
+through every layer in real time — so set it up as two browser windows next to each other:
+
+1. **Left window — Frontend.** Open the app: **https://experimentation.gunbarrelstudio.com**. It
+   loads on the **Frontend** tab. Leave it here.
+2. **Right window — Backend.** Open the same URL in a second window, drag it to the right half of
+   your screen, click the **Backend** tab, then **Stream backend logs** and confirm. You'll see
+   `connected — streaming api, stats …`.
+3. **Drive on the left, watch on the right.** Drive on the left, watch on the right. In the left (Frontend) window, assign a user to an experiment — or seed / clear a bucket — and the matching request appears in the backend log stream on the right. Then scroll down to the Control and Variant buckets, click "Record Success" on a few users, and watch the experiment's stats update live in the Variant table at the top of the panel.
+
+The (Backend) window prints the same request flowing through the stack: GraphQL resolver → Postgres (sticky assignment) → Redis (cache hit/miss) → MongoDB (event log).
+
+It's one deployed EC2 box serving both windows, so the logs are real, not simulated. Any confidential data in the logs is redacted server-side.
+
+The stream auto-disconnects after 5
+minutes and runs one at a time (bounded server load, no auth step required).
 
 ## The stack
 
@@ -91,3 +110,39 @@ web/                   # Next.js + React + Redux dashboard
   src/app/             # App Router pages
 stats/                 # Python FastAPI significance service
 ```
+
+## How I'd productionize this
+
+The intro promised the incremental version, so here it is concretely: same product, delivered as
+independently releasable slices instead of one drop, plus the hardening this prototype deliberately
+skips.
+
+**Ship it as thin vertical slices, each releasable on its own:**
+
+1. **Assignment first.** The API + Postgres path that turns `(experiment, user)` into a variant,
+   exposed as a small SDK/endpoint. Nothing logs events yet. Releasable value: a caller can bucket a
+   user deterministically. Dark-launch it, compare against the incumbent, ramp 1% → 100%.
+2. **Event ingestion, asynchronously.** Exposures and conversions, but *off* the request path
+   (publish to Kafka/Kinesis, consume into Mongo) so a slow write never adds user-facing latency.
+   The prototype logs inline today; that's the first thing I'd change.
+3. **Results + significance.** The aggregation read path and the stats service, once there's real
+   event volume worth reading.
+4. **Dashboard.** The UI last, on top of an API that already works and is already trusted.
+
+Each slice sits behind a feature flag and ramps on its own, so I'm integrating and de-risking
+continuously instead of at the end. (Pleasantly recursive: an experimentation platform *is* a
+flagging system, so I'd dogfood it and gate its own rollout with it.)
+
+**What I'd harden before real traffic** — the honest gaps in this slice:
+
+- **Bucketing** → consistent hashing salted per experiment, mutual-exclusion / holdback groups,
+  targeting rules, and ramp schedules — not just static weights.
+- **Stats** → the two-proportion z-test is a teaching stub. Production needs sequential /
+  always-valid testing to kill the peeking problem, sample-ratio-mismatch detection, and
+  multiple-comparison correction.
+- **Data layer** → Postgres read replicas; a TTL + archival/partitioning strategy for the unbounded
+  Mongo event log; Redis with failover and cache-stampede protection.
+- **API** → authN/Z, rate limiting, query depth/complexity limits, and DataLoader to kill N+1s.
+- **Ops** → CI/CD, secrets out of plaintext compose env (SSM / Secrets Manager), metrics + tracing +
+  alerting, and more than a single EC2 box. The `logstream` service mounts the Docker socket — fine
+  for an isolated demo, swapped for a real log pipeline in production.

@@ -1,0 +1,12 @@
+{
+  "name": "experimentation-logstream",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Streams REDACTED api+stats container logs over a WebSocket, time-bounded.",
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "dockerode": "^4.0.2",
+    "ws": "^8.18.0"
+  }
+}

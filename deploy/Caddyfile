@@ -9,5 +9,13 @@
 # environment variable — { email {$ACME_EMAIL} } — and set ACME_EMAIL on the host.
 
 api.gunbarrelstudio.com {
-    reverse_proxy api:4000
+	# WebSocket for the redacted backend log stream (Caddy upgrades WS automatically).
+	# The wildcard also covers POST /logstream/reset, which restarts api + stats.
+	handle /logstream* {
+		reverse_proxy logstream:8080
+	}
+	# Everything else → the GraphQL API.
+	handle {
+		reverse_proxy api:4000
+	}
 }
