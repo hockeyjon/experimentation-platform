@@ -6,6 +6,7 @@
   --text: #e6ecf7;
   --muted: #93a1bd;
   --accent: #4f8cff;
+  --tip-bg: #2f4d88; /* guided-tour coach-mark background — brighter than --panel-2 */
   --good: #35c98b;
   --warn: #f5a623;
   --bad: #ff6b6b;
@@ -110,6 +111,65 @@ a { color: var(--accent); }
 .modal h3 { margin: 0 0 12px; font-size: 16px; }
 .modal p { margin: 0 0 10px; font-size: 13px; line-height: 1.55; color: var(--muted); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+
+/* Welcome / tour intro modal — centered layout with the logo on top. */
+.welcome-modal { width: min(440px, 100%); text-align: center; }
+.welcome-logo { display: block; width: 112px; height: auto; margin: 4px auto 18px; }
+.welcome-modal h3 { font-size: 19px; margin-bottom: 8px; }
+.welcome-modal p { font-size: 14px; }
+.welcome-actions { justify-content: center; margin-top: 22px; }
+
+/* Guided-tour coach-mark: anchored to the RIGHT of its target button, pointing back at it. */
+.tour-anchor { position: relative; display: inline-flex; }
+.coach-tip {
+  position: absolute; z-index: 40; left: calc(100% + 16px); top: 50%; transform: translateY(-50%);
+  display: flex; align-items: flex-start; gap: 10px;
+  width: 300px;
+  /* Brighter than --panel-2 + an accent glow so the tip pops off the page. */
+  background: var(--tip-bg); border: 1px solid var(--accent); border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 0 0 1px rgba(79, 140, 255, 0.35), 0 14px 34px rgba(79, 140, 255, 0.32);
+}
+/* Left-pointing arrow: accent border triangle with the fill triangle laid on top. */
+.coach-tip::before {
+  content: ""; position: absolute; right: 100%; top: 50%; transform: translateY(-50%);
+  border: 9px solid transparent; border-right-color: var(--accent);
+}
+.coach-tip::after {
+  content: ""; position: absolute; right: 100%; top: 50%; transform: translateY(-50%);
+  border: 8px solid transparent; border-right-color: var(--tip-bg); margin-right: -1px;
+}
+/* Variant: tip sits to the LEFT of its anchor and points RIGHT — for the cramped modal. */
+.coach-tip-left { left: auto; right: calc(100% + 16px); width: 250px; }
+.coach-tip-left::before { right: auto; left: 100%; border-right-color: transparent; border-left-color: var(--accent); }
+.coach-tip-left::after {
+  right: auto; left: 100%; border-right-color: transparent;
+  border-left-color: var(--tip-bg); margin-right: 0; margin-left: -1px;
+}
+/* Variant: tip sits ABOVE its anchor and points DOWN — for buttons at the panel's left
+   edge, where a left-placed tip would be clipped by the scrolling main column. */
+.coach-tip-above {
+  left: 50%; right: auto; top: auto; bottom: calc(100% + 16px); transform: translateX(-50%);
+}
+.coach-tip-above::before {
+  right: auto; left: 50%; top: 100%; transform: translateX(-50%);
+  border-right-color: transparent; border-top-color: var(--accent);
+}
+.coach-tip-above::after {
+  right: auto; left: 50%; top: 100%; transform: translateX(-50%);
+  border-right-color: transparent; border-top-color: var(--tip-bg); margin-right: 0; margin-top: -1px;
+}
+.toast-badge {
+  flex: none; margin-top: 1px; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--accent); border: 1px solid var(--accent);
+}
+.toast-body { font-size: 13.5px; line-height: 1.5; color: var(--text); }
+.toast-close {
+  flex: none; background: transparent; border: none; color: var(--muted);
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px;
+}
+.toast-close:hover { color: var(--text); }
 
 /* Shown while api + stats restart, before the stream attaches. */
 .spinner {

@@ -26,6 +26,11 @@ export default function Dashboard() {
     (s) => s.experiments,
   );
   const [tab, setTab] = useState<"frontend" | "backend">("frontend");
+  // First-load welcome / tour prompt. Shows on every load for now (good for demos); can be
+  // gated to once-per-visitor via localStorage later if we want.
+  const [showWelcome, setShowWelcome] = useState(true);
+  // Guided tour progress. 0 = not running; each step drives a toast tip (+ any navigation).
+  const [tourStep, setTourStep] = useState(0);
 
   // Load experiments + restore the persisted buckets on mount.
   useEffect(() => {
@@ -39,8 +44,31 @@ export default function Dashboard() {
   // numbers land in Redux as they change. Re-subscribes on selection change.
   useStatsStream(selectedKey);
 
+  // Tour finale: after Launch, once the experiment reads RUNNING, pause the configured delay,
+  // then jump back to the Backend log stream and show the completion modal.
+  useEffect(() => {
+    if (tourStep === 11 && selected?.status === "RUNNING") {
+      const t = setTimeout(() => {
+        setTab("backend");
+        setTourStep(12);
+      }, TOUR_STEP_DELAY_MS);
+      return () => clearTimeout(t);
+    }
+  }, [tourStep, selected?.status]);
+
   return (
     <>
+      {showWelcome && (
+        <WelcomeModal
+          onSkip={() => setShowWelcome(false)}
+          onStartTour={() => {
+            setShowWelcome(false);
+            setTab("backend"); // step 1: over to the Backend (log stream) tab
+            setTourStep(1);
+          }}
+        />
+      )}
+      {tourStep === 12 && <TourDoneModal onEnd={() => setTourStep(0)} />}
       <div className="header">
         <h1>Experimentation Platform</h1>
         <span className="tag">Next.js · Redux · GraphQL · Prisma · Postgres · Mongo · Redis</span>
@@ -93,10 +121,23 @@ export default function Dashboard() {
               <ResultsCard
                 experiment={selected}
                 users={assignments.filter((a) => a.experimentKey === selected.key)}
+                tourStep={tourStep}
+                setTourStep={setTourStep}
               />
               {/* key forces a fresh AssignCard (input, variant select, pill) per experiment */}
-              <AssignCard key={selected.key} experimentKey={selected.key} variants={selected.variants} />
-              <UserBoard experimentKey={selected.key} variants={selected.variants} />
+              <AssignCard
+                key={selected.key}
+                experimentKey={selected.key}
+                variants={selected.variants}
+                tourStep={tourStep}
+                setTourStep={setTourStep}
+              />
+              <UserBoard
+                experimentKey={selected.key}
+                variants={selected.variants}
+                tourStep={tourStep}
+                setTourStep={setTourStep}
+              />
             </>
           ) : restarting ? (
             // The backend is genuinely gone for ~20s after Restart — say that, rather than
@@ -114,7 +155,7 @@ export default function Dashboard() {
           )}
         </main>
       </div>
-      <BackendLogs active={tab === "backend"} />
+      <BackendLogs active={tab === "backend"} tourStep={tourStep} setTourStep={setTourStep} setTab={setTab} />
     </>
   );
 }
@@ -131,6 +172,9 @@ const LOGSTREAM_TOKEN = process.env.NEXT_PUBLIC_LOGSTREAM_TOKEN ?? "let-me-see-t
 // with the log.info("startup", …) call in api/src/index.ts.
 const API_READY = /GraphQL API ready/;
 const READY_TIMEOUT_S = 60;
+
+// How long the guided tour pauses before each auto-advance to the next step. Tune here.
+const TOUR_STEP_DELAY_MS = 750;
 
 // Ask the log-stream service to recreate api + stats before we attach — the `make
 // logs-reset` equivalent. Always resolves to a line for the log view: a failed or throttled
@@ -269,50 +313,91 @@ function Modal(props: {
   );
 }
 
-// Step 1: what streaming entails at all.
-function ConfirmDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
+// First-load welcome dialog that offers the guided tour. Uses the same backdrop/panel
+// chrome as Modal, but with a centered layout and the logo up top.
+function WelcomeModal({ onSkip, onStartTour }: { onSkip: () => void; onStartTour: () => void }) {
+  const titleId = useId();
+
+  // Deliberately NOT dismissible by backdrop click or Escape — the only ways out are the
+  // "Skip" and "Take the tour" buttons. (No onClick on the backdrop, no Escape listener.)
   return (
-    <Modal
-      title="Stream backend logs"
-      onDismiss={onCancel}
-      actions={
-        <>
-          <button className="ghost" onClick={onCancel}>
-            Cancel
+    <div className="modal-backdrop">
+      <div
+        className="modal welcome-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+      >
+        <img className="welcome-logo" src="/logo.png" alt="Experimentation Platform logo" />
+        <h3 id={titleId}>Welcome to the Experimentation Platform</h3>
+        <p>A working, full-stack A/B experimentation demo. Would you like a quick guided tour?</p>
+        <div className="modal-actions welcome-actions">
+          <button className="ghost" onClick={onSkip}>
+            Skip
           </button>
-          <button className="primary" autoFocus onClick={onConfirm}>
-            Continue
+          <button className="primary" autoFocus onClick={onStartTour}>
+            Take the tour
           </button>
-        </>
-      }
-    >
-      <p>
-        For demonstration only — the next step offers to restart the backend services so the log
-        stream starts fresh from boot.
-      </p>
-      <p>
-        Backend logs will stream for 20 minutes, then automatically disconnect (this keeps server
-        load bounded).
-      </p>
-      <p>
-        Logs are redacted server-side — database IDs and emails stripped (user handles are generic
-        demo values).
-      </p>
-    </Modal>
+        </div>
+      </div>
+    </div>
   );
 }
 
-// Step 2: start clean, or attach to whatever is already running.
-function RestartDialog(props: { onDismiss: () => void; onRestart: () => void; onContinue: () => void }) {
+// Tour completion dialog — same chrome as WelcomeModal (logo on top, button-only), shown
+// when the tour ends back on the Backend log stream.
+function TourDoneModal({ onEnd }: { onEnd: () => void }) {
+  const titleId = useId();
+  return (
+    <div className="modal-backdrop">
+      <div className="modal welcome-modal" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <img className="welcome-logo" src="/logo.png" alt="Experimentation Platform logo" />
+        <h3 id={titleId}>You&apos;re all set</h3>
+        <p>Now you can watch the full data flow in the backend log stream. Happy experimenting 🎉</p>
+        <div className="modal-actions welcome-actions">
+          <button className="primary" autoFocus onClick={onEnd}>
+            End tour
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Start clean, or attach to whatever is already running.
+function RestartDialog(props: {
+  onDismiss: () => void;
+  onRestart: () => void;
+  onContinue: () => void;
+  tourActive: boolean;
+  onDismissTour: () => void;
+}) {
   return (
     <Modal
-      title="Restart the backend first?"
+      title="Logging Options"
       onDismiss={props.onDismiss}
       actions={
         <>
-          <button className="warn" onClick={props.onRestart}>
-            Restart
-          </button>
+          <span className="tour-anchor">
+            <button className="warn" onClick={props.onRestart}>
+              Restart
+            </button>
+            {props.tourActive && (
+              <div className="coach-tip coach-tip-left" role="status">
+                <span className="toast-badge">Tour</span>
+                <div className="toast-body">
+                  Click the <strong>Restart</strong> button.
+                </div>
+                <button
+                  className="toast-close"
+                  aria-label="Dismiss tour tip"
+                  onClick={props.onDismissTour}
+                >
+                  ×
+                </button>
+              </div>
+            )}
+          </span>
           <button className="primary" autoFocus onClick={props.onContinue}>
             Continue
           </button>
@@ -336,12 +421,21 @@ function RestartDialog(props: { onDismiss: () => void; onRestart: () => void; on
 // The "Backend" tab: opens a WebSocket to the log-stream service and shows redacted,
 // time-limited backend logs. No history is fetched (tail=0), and the stream auto-closes
 // after 20 minutes so it can never sit open burning server I/O.
-function BackendLogs({ active }: { active: boolean }) {
+function BackendLogs({
+  active,
+  tourStep,
+  setTourStep,
+  setTab,
+}: {
+  active: boolean;
+  tourStep: number;
+  setTourStep: (n: number) => void;
+  setTab: (t: "frontend" | "backend") => void;
+}) {
   const dispatch = useAppDispatch();
   const experiments = useAppSelector((s) => s.experiments.items);
   const [streaming, setStreaming] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [confirming, setConfirming] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const [subTab, setSubTab] = useState<"logging" | "services">("logging");
   const [checking, setChecking] = useState(false);
@@ -379,6 +473,36 @@ function BackendLogs({ active }: { active: boolean }) {
   useEffect(() => {
     if (viewRef.current) viewRef.current.scrollTop = viewRef.current.scrollHeight;
   }, [lines, active]);
+
+  // Tour: once the fresh session is live (the Stop button is showing — streaming, spinner
+  // gone), pause, then move the tour to the Micro-services panel and its Health check tip.
+  useEffect(() => {
+    if (tourStep === 3 && streaming && !resetting) {
+      const t = setTimeout(() => {
+        setServiceLines([]); // start the panel empty so the next step waits for a real click
+        setSubTab("services");
+        setTourStep(4);
+      }, TOUR_STEP_DELAY_MS);
+      return () => clearTimeout(t);
+    }
+  }, [tourStep, streaming, resetting, setTourStep]);
+
+  // Tour: after Health check is clicked and the `docker ps` output lands in the panel
+  // (serviceLines populated, no longer checking), pause, then head to the Frontend tab.
+  useEffect(() => {
+    if (tourStep === 4 && !checking && serviceLines.length > 0) {
+      const t = setTimeout(() => {
+        setTab("frontend");
+        setTourStep(5);
+      }, TOUR_STEP_DELAY_MS);
+      return () => clearTimeout(t);
+    }
+  }, [tourStep, checking, serviceLines, setTab, setTourStep]);
+
+  // Tour finale: land on the Logging sub-tab so the completion modal reveals the live stream.
+  useEffect(() => {
+    if (tourStep === 12) setSubTab("logging");
+  }, [tourStep]);
 
   // "Clear buckets" for every experiment — the same mutation the Frontend tab's button
   // fires, applied across the board so a restarted demo starts with nobody enrolled.
@@ -501,9 +625,29 @@ function BackendLogs({ active }: { active: boolean }) {
             <span className="muted">disconnecting in {mmss}</span>
           </>
         ) : (
-          <button className="primary" onClick={() => setConfirming(true)}>
-            Stream backend logs
-          </button>
+          <span className="tour-anchor">
+            <button
+              className="primary"
+              onClick={() => {
+                setChoosing(true); // straight to the restart choice (no intermediate dialog)
+                if (tourStep === 1) setTourStep(2); // advance the tour to the Restart tip
+              }}
+            >
+              Stream backend logs
+            </button>
+            {tourStep === 1 && (
+              <div className="coach-tip" role="status">
+                <span className="toast-badge">Tour</span>
+                <div className="toast-body">
+                  First, let&apos;s start a fresh session on the backend. Click the{" "}
+                  <strong>Stream backend logs</strong> button.
+                </div>
+                <button className="toast-close" aria-label="Dismiss tour tip" onClick={() => setTourStep(0)}>
+                  ×
+                </button>
+              </div>
+            )}
+          </span>
         )}
         <span className="muted small">
           Live api + stats logs, redacted server-side (DB IDs + emails stripped). Optionally
@@ -521,9 +665,20 @@ function BackendLogs({ active }: { active: boolean }) {
 
       <div className="backend-panel" style={{ display: subTab === "services" ? "flex" : "none" }}>
         <div className="backend-toolbar">
-          <button className="primary" disabled={checking} onClick={healthCheck}>
-            {checking ? "Checking…" : "Health check"}
-          </button>
+          <span className="tour-anchor">
+            <button className="primary" disabled={checking} onClick={healthCheck}>
+              {checking ? "Checking…" : "Health check"}
+            </button>
+            {tourStep === 4 && (
+              <div className="coach-tip" role="status">
+                <span className="toast-badge">Tour</span>
+                <div className="toast-body">Inspect the health of the backend microservices.</div>
+                <button className="toast-close" aria-label="Dismiss tour tip" onClick={() => setTourStep(0)}>
+                  ×
+                </button>
+              </div>
+            )}
+          </span>
           {checking && (
             <span className="muted">
               <span className="spinner" aria-hidden="true" /> querying the Docker host…
@@ -540,25 +695,21 @@ function BackendLogs({ active }: { active: boolean }) {
         </pre>
       </div>
 
-      {/* Two steps: consent to streaming at all, then choose whether to start clean. */}
-      {confirming && (
-        <ConfirmDialog
-          onCancel={() => setConfirming(false)}
-          onConfirm={() => {
-            setConfirming(false);
-            setChoosing(true);
-          }}
-        />
-      )}
+      {/* One step: choose whether to start clean, then stream. */}
       {choosing && (
         <RestartDialog
+          tourActive={tourStep === 2}
+          onDismissTour={() => setTourStep(0)}
           onDismiss={() => setChoosing(false)}
           onRestart={() => {
             setChoosing(false);
+            if (tourStep === 2) setTourStep(3); // tour: waiting for the fresh session to come up
             start(true);
           }}
           onContinue={() => {
             setChoosing(false);
+            // Off the scripted path, but keep the tour moving to the Micro-services step.
+            if (tourStep === 2) setTourStep(3);
             start(false);
           }}
         />
@@ -599,7 +750,12 @@ function VariantTag(props: { isControl: boolean }) {
   );
 }
 
-function ResultsCard(props: { experiment: Experiment; users: AssignedUser[] }) {
+function ResultsCard(props: {
+  experiment: Experiment;
+  users: AssignedUser[];
+  tourStep: number;
+  setTourStep: (n: number) => void;
+}) {
   const dispatch = useAppDispatch();
   const { experiment, users } = props;
   const running = experiment.status === "RUNNING";
@@ -723,13 +879,33 @@ function ResultsCard(props: { experiment: Experiment; users: AssignedUser[] }) {
       )}
 
       <div className="card-actions">
-        <button
-          className="primary"
-          disabled={running}
-          onClick={() => dispatch(setStatus({ key: experiment.key, status: "RUNNING" }))}
-        >
-          🚀 Launch to production
-        </button>
+        <span className="tour-anchor">
+          <button
+            className="primary"
+            disabled={running}
+            onClick={() => {
+              dispatch(setStatus({ key: experiment.key, status: "RUNNING" }));
+              if (props.tourStep === 10) props.setTourStep(11); // tour: on to the finale
+            }}
+          >
+            🚀 Launch to production
+          </button>
+          {props.tourStep === 10 && (
+            <div className="coach-tip" role="status">
+              <span className="toast-badge">Tour</span>
+              <div className="toast-body">
+                Finally, launch the experiment to production and watch it go live.
+              </div>
+              <button
+                className="toast-close"
+                aria-label="Dismiss tour tip"
+                onClick={() => props.setTourStep(0)}
+              >
+                ×
+              </button>
+            </div>
+          )}
+        </span>
         <button
           className="warn"
           disabled={!running}
@@ -742,7 +918,12 @@ function ResultsCard(props: { experiment: Experiment; users: AssignedUser[] }) {
   );
 }
 
-function AssignCard(props: { experimentKey: string; variants: Variant[] }) {
+function AssignCard(props: {
+  experimentKey: string;
+  variants: Variant[];
+  tourStep: number;
+  setTourStep: (n: number) => void;
+}) {
   const dispatch = useAppDispatch();
   const error = useAppSelector((s) => s.experiments.error);
   const userCount = useAppSelector(
@@ -784,6 +965,7 @@ function AssignCard(props: { experimentKey: string; variants: Variant[] }) {
         assignUser({ key: props.experimentKey, userId, variantKey: variantKey || undefined }),
       ).unwrap();
       setPill({ userId: res.userId, variantKey: res.variantKey, cached: res.cached });
+      if (props.tourStep === 5) props.setTourStep(6); // tour: on to the Seed step
       if (!res.cached) {
         hideTimer.current = setTimeout(() => {
           setPill(null);
@@ -817,9 +999,26 @@ function AssignCard(props: { experimentKey: string; variants: Variant[] }) {
             ))}
           </select>
         </div>
-        <button className="primary" onClick={handleCreate}>
-          Create User
-        </button>
+        <span className="tour-anchor">
+          <button className="primary" onClick={handleCreate}>
+            Create User
+          </button>
+          {props.tourStep === 5 && (
+            <div className="coach-tip" role="status">
+              <span className="toast-badge">Tour</span>
+              <div className="toast-body">
+                Now let&apos;s simulate real users enrolling — each one gets bucketed into a variant.
+              </div>
+              <button
+                className="toast-close"
+                aria-label="Dismiss tour tip"
+                onClick={() => props.setTourStep(0)}
+              >
+                ×
+              </button>
+            </div>
+          )}
+        </span>
       </div>
       <div className="pill-slot">
         {error && (
@@ -845,12 +1044,25 @@ function AssignCard(props: { experimentKey: string; variants: Variant[] }) {
 
 // The per-variant board: one column per variant. Enroll customers land here; record a
 // success per customer, and seed/clear the whole board.
-function UserBoard(props: { experimentKey: string; variants: Variant[] }) {
+function UserBoard(props: {
+  experimentKey: string;
+  variants: Variant[];
+  tourStep: number;
+  setTourStep: (n: number) => void;
+}) {
   const dispatch = useAppDispatch();
   const users = useAppSelector((s) =>
     s.experiments.assignments.filter((a) => a.experimentKey === props.experimentKey),
   );
   const hasUsers = users.length > 0;
+  const boardRef = useRef<HTMLDivElement | null>(null);
+
+  // Tour step 6: bring the whole Enrolled Customers panel into view.
+  useEffect(() => {
+    if (props.tourStep === 6) {
+      boardRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  }, [props.tourStep]);
 
   function seed() {
     const mkId = () => `cust_${Math.random().toString(36).slice(2, 8)}`;
@@ -863,16 +1075,37 @@ function UserBoard(props: { experimentKey: string; variants: Variant[] }) {
   }
 
   return (
-    <div className="card">
+    <div className="card" ref={boardRef}>
       <h3 className="card-title">
         Enrolled Customers
         <InfoButton text="Each enrolled customer lands in one variant column. Record a success (conversion) per customer — the blue button disables once recorded. Seed adds 5 customers to each variant; Clear empties the board." />
       </h3>
 
       <div className="board-toolbar">
-        <button className="primary" onClick={seed}>
-          Seed 5 per variant
-        </button>
+        <span className="tour-anchor">
+          <button
+            className="primary"
+            onClick={() => {
+              seed();
+              if (props.tourStep === 6) props.setTourStep(7); // tour: on to the first success
+            }}
+          >
+            Seed 5 per variant
+          </button>
+          {props.tourStep === 6 && (
+            <div className="coach-tip" role="status">
+              <span className="toast-badge">Tour</span>
+              <div className="toast-body">Seed 5 more users into each bucket.</div>
+              <button
+                className="toast-close"
+                aria-label="Dismiss tour tip"
+                onClick={() => props.setTourStep(0)}
+              >
+                ×
+              </button>
+            </div>
+          )}
+        </span>
         <button
           className="warn"
           disabled={!hasUsers}
@@ -883,7 +1116,7 @@ function UserBoard(props: { experimentKey: string; variants: Variant[] }) {
       </div>
 
       <div className="variant-columns">
-        {props.variants.map((v) => {
+        {props.variants.map((v, colIndex) => {
           const colUsers = users.filter((u) => u.variantKey === v.key);
           return (
             <div key={v.key} className="variant-col">
@@ -892,24 +1125,58 @@ function UserBoard(props: { experimentKey: string; variants: Variant[] }) {
                 <span className="muted">({colUsers.length})</span>
               </div>
               {colUsers.length === 0 && <div className="muted small">No customers yet</div>}
-              {colUsers.map((u) => (
-                <div key={u.userId} className="user-row">
-                  <span className="user-name" title={u.userId}>
-                    {u.userId}
-                  </span>
-                  <button
-                    className="primary small-btn"
-                    disabled={u.converted}
-                    onClick={() => {
-                      // Record the success on the backend; the board's converted flag
-                      // drives the results table (no separate results fetch needed).
-                      dispatch(logConversion({ key: props.experimentKey, userId: u.userId }));
-                    }}
-                  >
-                    {u.converted ? "✓ Recorded" : "Record success"}
-                  </button>
-                </div>
-              ))}
+              {colUsers.map((u, rowIndex) => {
+                // The tour spotlights three successes in order: one in bucket 1 (step 7), then two
+                // in bucket 2 (steps 8 and 9). The spotlighted button advances the tour on click.
+                let tipStep = 0;
+                let tipText = "";
+                if (colIndex === 0 && rowIndex === 0) {
+                  tipStep = 7;
+                  tipText = "Now let's simulate some successful events detected on customer surfaces.";
+                } else if (colIndex === 1 && rowIndex === 0) {
+                  tipStep = 8;
+                  tipText = "Simulate another success.";
+                } else if (colIndex === 1 && rowIndex === 1) {
+                  tipStep = 9;
+                  tipText = "One more time.";
+                }
+                const showTip = tipStep !== 0 && props.tourStep === tipStep;
+                return (
+                  <div key={u.userId} className="user-row">
+                    <span className="user-name" title={u.userId}>
+                      {u.userId}
+                    </span>
+                    <span className="tour-anchor">
+                      <button
+                        className="primary small-btn"
+                        disabled={u.converted}
+                        onClick={() => {
+                          // Record the success on the backend; the board's converted flag
+                          // drives the results table (no separate results fetch needed).
+                          dispatch(logConversion({ key: props.experimentKey, userId: u.userId }));
+                          // Tour: clicking the spotlighted button advances to the next step.
+                          if (showTip) props.setTourStep(tipStep + 1);
+                        }}
+                      >
+                        {u.converted ? "✓ Recorded" : "Record success"}
+                      </button>
+                      {showTip && (
+                        <div className="coach-tip coach-tip-left" role="status">
+                          <span className="toast-badge">Tour</span>
+                          <div className="toast-body">{tipText}</div>
+                          <button
+                            className="toast-close"
+                            aria-label="Dismiss tour tip"
+                            onClick={() => props.setTourStep(0)}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           );
         })}
