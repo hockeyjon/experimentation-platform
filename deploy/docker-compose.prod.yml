@@ -66,7 +66,7 @@ services:
       # access. Redaction + the time/connection limits are the actual protection.
       LOGSTREAM_TOKEN: ${LOGSTREAM_TOKEN:-let-me-see-the-logs}
       ALLOWED_ORIGIN: https://experimentation.gunbarrelstudio.com
-      MAX_STREAM_SECONDS: "300"
+      MAX_STREAM_SECONDS: "1200"
       # Minimum gap between /logstream/reset recreates of api + stats.
       RESET_COOLDOWN_SECONDS: "30"
     volumes:

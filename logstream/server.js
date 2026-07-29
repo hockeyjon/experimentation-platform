@@ -25,7 +25,7 @@ const TOKEN = process.env.LOGSTREAM_TOKEN ?? "let-me-see-the-logs";
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? "https://experimentation.gunbarrelstudio.com";
 const SERVICES = (process.env.LOG_SERVICES ?? "api,stats").split(",");
 const PROJECT = process.env.COMPOSE_PROJECT ?? "deploy";
-const MAX_SECONDS = Number(process.env.MAX_STREAM_SECONDS ?? 300); // 5 minutes
+const MAX_SECONDS = Number(process.env.MAX_STREAM_SECONDS ?? 1200); // 20 minutes
 const RESET_COOLDOWN = Number(process.env.RESET_COOLDOWN_SECONDS ?? 30);
 
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });

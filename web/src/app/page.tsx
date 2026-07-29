@@ -196,6 +196,7 @@ async function fetchContainers(): Promise<string[]> {
 const ANSI_COLOR: Record<string, string> = {
   "32": "#4ade80", // green  — assignUser
   "34": "#60a5fa", // blue   — graphql
+  "36": "#22d3ee", // cyan   — lifecycle (launch / rollback)
   "33": "#facc15", // yellow — postgres
   "38;5;208": "#fb923c", // orange — mongo
   "38;5;141": "#a78bfa", // violet — redis
@@ -290,7 +291,7 @@ function ConfirmDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfir
         stream starts fresh from boot.
       </p>
       <p>
-        Backend logs will stream for 5 minutes, then automatically disconnect (this keeps server
+        Backend logs will stream for 20 minutes, then automatically disconnect (this keeps server
         load bounded).
       </p>
       <p>
@@ -334,7 +335,7 @@ function RestartDialog(props: { onDismiss: () => void; onRestart: () => void; on
 
 // The "Backend" tab: opens a WebSocket to the log-stream service and shows redacted,
 // time-limited backend logs. No history is fetched (tail=0), and the stream auto-closes
-// after 5 minutes so it can never sit open burning server I/O.
+// after 20 minutes so it can never sit open burning server I/O.
 function BackendLogs({ active }: { active: boolean }) {
   const dispatch = useAppDispatch();
   const experiments = useAppSelector((s) => s.experiments.items);
@@ -425,7 +426,7 @@ function BackendLogs({ active }: { active: boolean }) {
     wsRef.current = ws;
     setLines(notes);
     setStreaming(true);
-    setRemaining(300);
+    setRemaining(1200);
     tickRef.current = setInterval(() => setRemaining((r) => Math.max(0, r - 1)), 1000);
 
     if (restart) {
@@ -506,7 +507,7 @@ function BackendLogs({ active }: { active: boolean }) {
         )}
         <span className="muted small">
           Live api + stats logs, redacted server-side (DB IDs + emails stripped). Optionally
-          restarts the backend on start; auto-disconnects after 5 minutes.
+          restarts the backend on start; auto-disconnects after 20 minutes.
         </span>
       </div>
         <pre className="log-view" ref={viewRef} aria-busy={resetting}>

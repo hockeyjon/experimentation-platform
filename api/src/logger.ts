@@ -12,6 +12,7 @@ const RESET = "\x1b[0m";
 const SCOPE_COLORS: Record<string, string> = {
   assignUser: "\x1b[32m", // green
   graphql: "\x1b[34m", // blue
+  lifecycle: "\x1b[36m", // cyan — launch / rollback, the headline events
   mongo: "\x1b[38;5;208m", // orange (256-color — there is no basic ANSI orange)
   postgres: "\x1b[33m", // yellow
   redis: "\x1b[38;5;141m", // violet (256-color, like orange)

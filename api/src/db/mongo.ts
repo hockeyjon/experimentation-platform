@@ -32,10 +32,31 @@ export async function connectMongo(): Promise<void> {
   // Indexes that make the aggregation queries in the stats layer fast.
   await events().createIndex({ experimentKey: 1, variantKey: 1, type: 1 });
   await events().createIndex({ timestamp: -1 });
+  // Keep the audit trail queryable by experiment + recency.
+  await audit().createIndex({ experimentKey: 1, timestamp: -1 });
   log.info("mongo", `connected to ${dbName}`);
 }
 
 export function events(): Collection<ExperimentEvent> {
   if (!db) throw new Error("Mongo not connected — call connectMongo() first");
   return db.collection<ExperimentEvent>("events");
+}
+
+// An operator action on an experiment — launching it to production, rolling it back.
+// The audit trail every experimentation platform needs: who changed what, when.
+export interface AuditEntry {
+  experimentKey: string;
+  action: "launch" | "rollback" | "status-change";
+  from: string;
+  to: string;
+  enrolledCustomers: number;
+  timestamp: Date;
+}
+
+// Deliberately a separate collection from `events`. The exposure/conversion aggregations
+// in the API and the Python stats service group by variantKey, and an audit document has
+// no variant — mixing them in would invent a phantom variant in every result set.
+export function audit(): Collection<AuditEntry> {
+  if (!db) throw new Error("Mongo not connected — call connectMongo() first");
+  return db.collection<AuditEntry>("audit");
 }

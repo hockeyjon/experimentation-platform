@@ -6,7 +6,7 @@
 //   MongoDB           -> the exposure/conversion event log
 import { DateTimeResolver, JSONResolver } from "graphql-scalars";
 import { prisma } from "../db/prisma.js";
-import { events } from "../db/mongo.js";
+import { events, audit, type AuditEntry } from "../db/mongo.js";
 import { redis, assignmentKey, ASSIGNMENT_TTL_SECONDS } from "../db/redis.js";
 import { pickVariant } from "../lib/assignment.js";
 import { log } from "../logger.js";
@@ -141,15 +141,46 @@ export const resolvers = {
       return prisma.experiment.create({ data, include: { variants: true } });
     },
 
-    setExperimentStatus: (
+    // Launch to production / roll back. Beyond flipping the Postgres status, this records
+    // an immutable lifecycle entry in the Mongo audit trail — the who/what/when a real
+    // experimentation platform keeps — and narrates it in the logs so the action is visible
+    // end to end in the backend stream.
+    setExperimentStatus: async (
       _: unknown,
       args: { key: string; status: "DRAFT" | "RUNNING" | "PAUSED" | "COMPLETED" },
     ) => {
-      log.info("setStatus", `${args.key} → ${args.status}`);
+      const experiment = await prisma.experiment.findUnique({ where: { key: args.key } });
+      if (!experiment) throw new Error(`Unknown experiment: ${args.key}`);
+
+      const from = experiment.status;
+      const to = args.status;
+      // Classify the transition: → RUNNING is a launch, RUNNING → anything else is a
+      // rollback, everything else is a plain status change.
+      const action: AuditEntry["action"] =
+        to === "RUNNING" ? "launch" : from === "RUNNING" ? "rollback" : "status-change";
+
+      // How many customers are live in the experiment right now — the number that makes a
+      // launch or rollback consequential. Counted from the Postgres assignments.
+      const enrolledCustomers = await prisma.assignment.count({
+        where: { experimentId: experiment.id },
+      });
+
+      const label = action === "launch" ? "🚀 LAUNCH" : action === "rollback" ? "⏮ ROLLBACK" : "STATUS";
+      log.info("lifecycle", `${label} ${args.key}: ${from} → ${to} (${enrolledCustomers} customers enrolled)`);
+
+      // Postgres: flip the status (the source of truth the dashboard reads back).
       const where = { key: args.key };
-      const data = { status: args.status };
+      const data = { status: to };
       log.write("postgres", "experiment.update", { where, data });
-      return prisma.experiment.update({ where, data, include: { variants: true } });
+      const updated = await prisma.experiment.update({ where, data, include: { variants: true } });
+
+      // Mongo: append the audit entry. Append-only, no variant — hence its own collection.
+      const entry: AuditEntry = { experimentKey: args.key, action, from, to, enrolledCustomers, timestamp: new Date() };
+      log.write("mongo", "audit.insertOne", entry);
+      const res = await audit().insertOne(entry);
+      log.info("lifecycle", `${action} recorded in audit trail _id=${res.insertedId}`);
+
+      return updated;
     },
 
     // The main event: bucket a user (deterministically), persist the sticky
