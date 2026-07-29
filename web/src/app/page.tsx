@@ -94,6 +94,13 @@ export default function Dashboard() {
   );
 }
 
+// The log-stream service sits behind the same host as the GraphQL API, under /logstream*.
+const API_BASE = (process.env.NEXT_PUBLIC_GRAPHQL_URL ?? "https://api.gunbarrelstudio.com/").replace(
+  /\/+$/,
+  "",
+);
+const LOGSTREAM_TOKEN = process.env.NEXT_PUBLIC_LOGSTREAM_TOKEN ?? "let-me-see-the-logs";
+
 // A restart isn't done when the container starts — node still runs `prisma db push` and
 // boots. This is the line the api logs when it is actually serving; it must stay in sync
 // with the log.info("startup", …) call in api/src/index.ts.
@@ -103,9 +110,9 @@ const READY_TIMEOUT_S = 60;
 // Ask the log-stream service to recreate api + stats before we attach — the `make
 // logs-reset` equivalent. Always resolves to a line for the log view: a failed or throttled
 // reset is worth showing, but it never blocks the stream (seeing the logs is the point).
-async function resetBackend(base: string, token: string): Promise<string> {
+async function resetBackend(): Promise<string> {
   try {
-    const res = await fetch(`${base}/logstream/reset?token=${encodeURIComponent(token)}`, {
+    const res = await fetch(`${API_BASE}/logstream/reset?token=${encodeURIComponent(LOGSTREAM_TOKEN)}`, {
       method: "POST",
     });
     if (res.ok) {
@@ -119,6 +126,42 @@ async function resetBackend(base: string, token: string): Promise<string> {
     return `[logstream] reset failed (${res.status}) — streaming anyway`;
   } catch {
     return "[logstream] reset request failed — streaming anyway";
+  }
+}
+
+type ContainerRow = {
+  name: string;
+  image: string;
+  state: string;
+  status: string;
+  service: string | null;
+  ports: string;
+};
+
+// Ask the log-stream service what is running on the host — the browser-side equivalent of
+// `make list-backend`. Returns lines for the panel, laid out like `docker ps` output.
+async function fetchContainers(): Promise<string[]> {
+  const stamp = new Date().toTimeString().slice(0, 8);
+  try {
+    const res = await fetch(
+      `${API_BASE}/logstream/containers?token=${encodeURIComponent(LOGSTREAM_TOKEN)}`,
+    );
+    if (!res.ok) return [`${stamp} [health] request failed (${res.status})`];
+    const { containers } = (await res.json()) as { containers: ContainerRow[] };
+    if (!containers.length) return [`${stamp} [health] no running containers`];
+
+    // Pad the first three columns so the output lines up the way `docker ps` does.
+    const grid = [
+      ["NAMES", "IMAGE", "STATUS", "PORTS"],
+      ...containers.map((c) => [c.name, c.image, c.status, c.ports]),
+    ];
+    const widths = [0, 1, 2].map((i) => Math.max(...grid.map((row) => row[i].length)));
+    const table = grid.map((row) =>
+      row.map((cell, i) => (i < 3 ? cell.padEnd(widths[i]) : cell)).join("   ").trimEnd(),
+    );
+    return [`${stamp} [health] ${containers.length} running container(s)`, "", ...table];
+  } catch {
+    return [`${stamp} [health] request failed — is the backend reachable?`];
   }
 }
 
@@ -274,6 +317,9 @@ function BackendLogs({ active }: { active: boolean }) {
   const [resetting, setResetting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [choosing, setChoosing] = useState(false);
+  const [subTab, setSubTab] = useState<"logging" | "services">("logging");
+  const [checking, setChecking] = useState(false);
+  const [serviceLines, setServiceLines] = useState<string[]>([]);
   const [busyLabel, setBusyLabel] = useState("");
   const [lines, setLines] = useState<string[]>([]);
   const [remaining, setRemaining] = useState(0);
@@ -320,11 +366,8 @@ function BackendLogs({ active }: { active: boolean }) {
   }
 
   async function start(restart: boolean) {
-    // Derive the endpoints from the GraphQL URL: https://api…/ → wss://api…/logstream
-    const api = process.env.NEXT_PUBLIC_GRAPHQL_URL ?? "https://api.gunbarrelstudio.com/";
-    const base = api.replace(/\/+$/, "");
-    const wsUrl = base.replace(/^http/, "ws") + "/logstream";
-    const token = process.env.NEXT_PUBLIC_LOGSTREAM_TOKEN ?? "let-me-see-the-logs";
+    // https://api…/ → wss://api…/logstream
+    const wsUrl = API_BASE.replace(/^http/, "ws") + "/logstream";
 
     const notes: string[] = [];
     if (restart) {
@@ -336,7 +379,7 @@ function BackendLogs({ active }: { active: boolean }) {
       setBusyLabel("Clearing enrolled customers…");
       notes.push(await clearAllBuckets());
       setBusyLabel("Recreating api + stats…");
-      notes.push(await resetBackend(base, token));
+      notes.push(await resetBackend());
       // The container is started but node still has to run `prisma db push` and boot, so
       // the spinner stays up until the api announces itself in the stream below.
       setBusyLabel("Waiting for the api to report ready…");
@@ -344,7 +387,7 @@ function BackendLogs({ active }: { active: boolean }) {
       notes.push("[logstream] continuing from the current state — nothing restarted");
     }
 
-    const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(token)}`);
+    const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(LOGSTREAM_TOKEN)}`);
     wsRef.current = ws;
     setLines(notes);
     setStreaming(true);
@@ -373,9 +416,33 @@ function BackendLogs({ active }: { active: boolean }) {
 
   const mmss = `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`;
 
+  async function healthCheck() {
+    setChecking(true);
+    setServiceLines(await fetchContainers());
+    setChecking(false);
+  }
+
   return (
     <div className="backend-logs" style={{ display: active ? "flex" : "none" }}>
-      <div className="backend-toolbar">
+      <div className="subtabbar">
+        <button
+          className={`subtab ${subTab === "logging" ? "active" : ""}`}
+          onClick={() => setSubTab("logging")}
+        >
+          Logging
+        </button>
+        <button
+          className={`subtab ${subTab === "services" ? "active" : ""}`}
+          onClick={() => setSubTab("services")}
+        >
+          Micro-services
+        </button>
+      </div>
+
+      {/* Both panels stay mounted — hiding rather than unmounting keeps the log
+          WebSocket alive while you look at the micro-services panel. */}
+      <div className="backend-panel" style={{ display: subTab === "logging" ? "flex" : "none" }}>
+        <div className="backend-toolbar">
         {resetting ? (
           <>
             <button className="primary" disabled>
@@ -402,13 +469,36 @@ function BackendLogs({ active }: { active: boolean }) {
           restarts the backend on start; auto-disconnects after 5 minutes.
         </span>
       </div>
-      <pre className="log-view" ref={viewRef} aria-busy={resetting}>
-        {lines.length
-          ? lines.map((line, i) => <AnsiLine key={i} text={line} />)
-          : resetting
-            ? busyLabel
-            : 'Click "Stream backend logs" to begin.'}
-      </pre>
+        <pre className="log-view" ref={viewRef} aria-busy={resetting}>
+          {lines.length
+            ? lines.map((line, i) => <AnsiLine key={i} text={line} />)
+            : resetting
+              ? busyLabel
+              : 'Click "Stream backend logs" to begin.'}
+        </pre>
+      </div>
+
+      <div className="backend-panel" style={{ display: subTab === "services" ? "flex" : "none" }}>
+        <div className="backend-toolbar">
+          <button className="primary" disabled={checking} onClick={healthCheck}>
+            {checking ? "Checking…" : "Health check"}
+          </button>
+          {checking && (
+            <span className="muted">
+              <span className="spinner" aria-hidden="true" /> querying the Docker host…
+            </span>
+          )}
+          <span className="muted small">
+            Containers running on the EC2 instance — the same view as `make list-backend`.
+          </span>
+        </div>
+        <pre className="log-view" aria-busy={checking}>
+          {serviceLines.length
+            ? serviceLines.join("\n")
+            : 'Click "Health check" to list the running services.'}
+        </pre>
+      </div>
+
       {/* Two steps: consent to streaming at all, then choose whether to start clean. */}
       {confirming && (
         <ConfirmDialog

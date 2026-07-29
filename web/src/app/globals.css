@@ -59,6 +59,23 @@ a { color: var(--accent); }
   display: flex; flex-direction: column;
   padding: 18px 28px 24px;
 }
+/* Sub-tabs inside the Backend tab: Logging | Micro-services. Lighter than the top-level
+   tabbar so the hierarchy reads correctly. */
+.subtabbar {
+  display: flex; gap: 4px; align-items: center;
+  margin-bottom: 14px; border-bottom: 1px solid var(--border);
+}
+.subtabbar .subtab {
+  background: transparent; border: none; color: var(--muted);
+  padding: 7px 12px; font-size: 13px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.subtabbar .subtab:hover { color: var(--text); }
+.subtabbar .subtab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+/* Each sub-tab's contents. The hidden one keeps display:none via an inline style. */
+.backend-panel { flex: 1; min-height: 0; flex-direction: column; }
+
 .backend-toolbar {
   display: flex; align-items: center; gap: 14px;
   margin-bottom: 12px; flex-wrap: wrap;

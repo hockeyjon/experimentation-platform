@@ -1,0 +1,19 @@
+# Caddy config for the LOCAL full stack (deploy/docker-compose.local.yml).
+#
+# Same routing as the production Caddyfile, with one deliberate difference: the site
+# address is a bare port, so Caddy serves plain HTTP and never tries to obtain a TLS
+# certificate (there is no public hostname to validate against locally).
+#
+# The point of running Caddy locally at all is that the frontend derives the log-stream
+# URL from NEXT_PUBLIC_GRAPHQL_URL — GraphQL and /logstream* must share one origin, exactly
+# as they do in production.
+:8080 {
+	# WebSocket log stream + the /logstream/reset and /logstream/containers endpoints.
+	handle /logstream* {
+		reverse_proxy logstream:8080
+	}
+	# Everything else → the GraphQL API.
+	handle {
+		reverse_proxy api:4000
+	}
+}

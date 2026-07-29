@@ -55,6 +55,36 @@ async function findContainers() {
     .map((c) => ({ id: c.Id, service: c.Labels["com.docker.compose.service"] }));
 }
 
+// Render a container's port bindings the way `docker ps` does: published ports as
+// "0.0.0.0:443->443/tcp", unpublished ones as bare "8000/tcp". Deduped and sorted, since
+// the Docker API lists an entry per address family.
+function formatPorts(ports = []) {
+  const seen = [
+    ...new Set(
+      ports.map((p) =>
+        p.PublicPort ? `${p.IP}:${p.PublicPort}->${p.PrivatePort}/${p.Type}` : `${p.PrivatePort}/${p.Type}`,
+      ),
+    ),
+  ];
+  return seen.sort().join(", ");
+}
+
+// Everything running on the host, i.e. what `make list-backend` shows. Read-only, so
+// unlike /logstream/reset it needs no cooldown.
+async function listAllContainers() {
+  const list = await docker.listContainers();
+  return list
+    .map((c) => ({
+      name: (c.Names?.[0] ?? "").replace(/^\//, ""),
+      image: c.Image,
+      state: c.State,
+      status: c.Status,
+      service: c.Labels?.["com.docker.compose.service"] ?? null,
+      ports: formatPorts(c.Ports),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // Recreate the app containers — the browser-side equivalent of `make logs-reset`
 // (`docker compose up -d --force-recreate api stats`). A restart is not enough: Docker's
 // log file lives as long as the container, so only a brand-new container starts empty.
@@ -102,20 +132,50 @@ let lastReset = 0;
 // POST /logstream/reset — same gating as the stream (app origin + bundle token), plus a
 // cooldown. The token is public (it ships in the browser bundle), so the cooldown is what
 // stops this from being a lever to keep the API perpetually restarting.
-async function handleReset(req, res, url) {
+// Shared gating for the HTTP endpoints: CORS preflight, method, app origin, bundle token.
+// Returns the JSON response headers when the request may proceed, or null once it has
+// already answered the request.
+function gate(req, res, url, method) {
   const cors = {
     "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Methods": `${method}, OPTIONS`,
     Vary: "Origin",
   };
-  const json = { ...cors, "Content-Type": "application/json" };
-
-  if (req.method === "OPTIONS") return res.writeHead(204, cors).end();
-  if (req.method !== "POST") return res.writeHead(405, cors).end("method");
-  if (req.headers.origin && req.headers.origin !== ALLOWED_ORIGIN) {
-    return res.writeHead(403, cors).end("origin");
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, cors).end();
+    return null;
   }
-  if (url.searchParams.get("token") !== TOKEN) return res.writeHead(401, cors).end("unauthorized");
+  if (req.method !== method) {
+    res.writeHead(405, cors).end("method");
+    return null;
+  }
+  if (req.headers.origin && req.headers.origin !== ALLOWED_ORIGIN) {
+    res.writeHead(403, cors).end("origin");
+    return null;
+  }
+  if (url.searchParams.get("token") !== TOKEN) {
+    res.writeHead(401, cors).end("unauthorized");
+    return null;
+  }
+  return { ...cors, "Content-Type": "application/json" };
+}
+
+// GET /logstream/containers — what is running on the host, i.e. `make list-backend`.
+async function handleContainers(req, res, url) {
+  const json = gate(req, res, url, "GET");
+  if (!json) return;
+  try {
+    const containers = await listAllContainers();
+    return res.writeHead(200, json).end(JSON.stringify({ containers }));
+  } catch (e) {
+    console.error(`[logstream] container list failed: ${e.message}`);
+    return res.writeHead(500, json).end(JSON.stringify({ error: e.message }));
+  }
+}
+
+async function handleReset(req, res, url) {
+  const json = gate(req, res, url, "POST");
+  if (!json) return;
 
   const waitMs = lastReset + RESET_COOLDOWN * 1000 - Date.now();
   if (waitMs > 0) {
@@ -139,6 +199,7 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/healthz") return res.writeHead(200).end("ok");
   if (url.pathname === "/logstream/reset") return handleReset(req, res, url);
+  if (url.pathname === "/logstream/containers") return handleContainers(req, res, url);
   res.writeHead(426).end("Upgrade Required");
 });
 const wss = new WebSocketServer({ server, path: "/logstream" });

@@ -1,0 +1,116 @@
+# The FULL stack, running locally — api, stats, logstream, Caddy and the three datastores.
+#
+# Why this exists alongside the root docker-compose.yml: that one runs the datastores only,
+# which is all you need when the api runs on the host via `npm run dev`. But the Backend tab
+# streams logs from *containers* and lists them over the Docker socket, so exercising it
+# locally means running the app services as containers too, behind a proxy that puts the
+# GraphQL API and /logstream* on a single origin.
+#
+# Differences from docker-compose.prod.yml:
+#   - Caddy serves plain HTTP on :8080 (no hostname, no TLS) — see Caddyfile.local.
+#   - The datastores publish NO host ports, so this stack can run at the same time as the
+#     root docker-compose.yml without fighting over 5433/27017/6379.
+#   - Its own volumes, so local experiment data is separate from the datastore-only stack.
+#
+# Usage:  make local-up  →  make local-seed  →  make local-web
+name: explocal
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "${LOCAL_PORT:-8080}:8080"
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - api
+
+  api:
+    build: ../api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://experimentation:experimentation@postgres:5432/experiments?schema=public
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DB: experiments_events
+      REDIS_URL: redis://redis:6379
+      PORT: "4000"
+      # Keep the boot output clean — the CLI's update banner lands in the log stream.
+      PRISMA_HIDE_UPDATE_MESSAGE: "true"
+      CHECKPOINT_DISABLE: "1"
+    command: sh -c "npx prisma db push --skip-generate && npm run start"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  stats:
+    build: ../stats
+    restart: unless-stopped
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DB: experiments_events
+    depends_on:
+      mongo: { condition: service_healthy }
+
+  logstream:
+    build: ../logstream
+    restart: unless-stopped
+    environment:
+      LOGSTREAM_TOKEN: ${LOGSTREAM_TOKEN:-let-me-see-the-logs}
+      # The Next.js dev server, not the deployed site.
+      ALLOWED_ORIGIN: http://localhost:3000
+      MAX_STREAM_SECONDS: "300"
+      RESET_COOLDOWN_SECONDS: "10"
+      # Must match this file's `name:` — it is how logstream finds the api/stats containers.
+      COMPOSE_PROJECT: explocal
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - api
+      - stats
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: experimentation
+      POSTGRES_PASSWORD: experimentation
+      POSTGRES_DB: experiments
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U experimentation -d experiments"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["mongod", "--quiet"]
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+      start_interval: 2s
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  mongodata:
+  redisdata:

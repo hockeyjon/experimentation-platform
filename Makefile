@@ -24,12 +24,15 @@ EC2_HOST         ?= 3.151.8.246
 SSH_KEY          ?= ~/.ssh/experimentation-ec2.pem
 REMOTE_DIR       ?= experimentation
 COMPOSE          := docker compose -f docker-compose.prod.yml
+LOCAL_PORT       ?= 8080
+LOCAL_COMPOSE    := LOCAL_PORT=$(LOCAL_PORT) docker compose -f deploy/docker-compose.local.yml
 
 RSYNC_EXCLUDES := --exclude node_modules --exclude .next --exclude out --exclude .git \
                   --exclude .venv --exclude web --exclude terraform --exclude .env --exclude .DS_Store
 
 .DEFAULT_GOAL := help
-.PHONY: help build sync invalidate frontend backend seed deploy ssh ps list-backend logs logs-all logs-fresh logs-reset start stop status
+.PHONY: help build sync invalidate frontend backend seed deploy ssh ps list-backend logs logs-all logs-fresh logs-reset start stop status \
+        local-up local-seed local-web local-logs local-ps local-down
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -84,6 +87,33 @@ seed: ## Seed the production database (sample experiments + simulated traffic)
 deploy: ## Full deploy: frontend + backend
 	$(MAKE) frontend
 	$(MAKE) backend
+
+# --- local full stack ------------------------------------------------------
+# Runs everything the EC2 box runs — api, stats, logstream, Caddy, datastores — on your
+# machine, so the Backend tab (log streaming + health check) works without deploying. The
+# app services must be CONTAINERS for that tab to have anything to stream or list, which is
+# why this exists alongside the datastore-only root docker-compose.yml.
+local-up: ## Start the full stack locally (http://localhost:8080), then `make local-seed`
+	$(LOCAL_COMPOSE) up -d --build
+	@echo ""
+	@echo "  backend ready on http://localhost:$(LOCAL_PORT)"
+	@echo "  next:  make local-seed     # sample experiments (the DB starts empty)"
+	@echo "         make local-web      # Next.js dev server on http://localhost:3000"
+
+local-seed: ## Seed the local database with sample experiments + traffic
+	$(LOCAL_COMPOSE) exec -T api npm run seed
+
+local-web: ## Run the Next.js dev server against the local stack (hot reload)
+	cd web && NEXT_PUBLIC_GRAPHQL_URL=http://localhost:$(LOCAL_PORT)/ npm run dev
+
+local-logs: ## Tail the local app-flow logs (api + stats)
+	$(LOCAL_COMPOSE) logs -f --tail=100 api stats
+
+local-ps: ## Show the local stack's containers
+	$(LOCAL_COMPOSE) ps
+
+local-down: ## Stop the local stack (CLEAN=1 also drops its data volumes)
+	$(LOCAL_COMPOSE) down $(if $(CLEAN),--volumes,)
 
 # --- ops helpers -----------------------------------------------------------
 ssh: ## Open an SSH session on the instance
