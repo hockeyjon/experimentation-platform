@@ -29,6 +29,23 @@ export interface VariantResult {
   conversionRate: number;
 }
 
+// One variant as computed by the Python stats service and pushed over SSE. Same counts as
+// VariantResult plus the analysis the z-test adds — lift measured against the control the
+// API supplied, and whether the difference clears alpha = 0.05.
+export interface VariantSignificance extends VariantResult {
+  isControl: boolean;
+  liftPct: number;
+  zScore?: number;
+  pValue: number | null;
+  significant: boolean;
+}
+export interface Significance {
+  experimentKey: string;
+  controlVariant?: string;
+  variants: VariantSignificance[];
+  note?: string;
+}
+
 // One user the operator has created this session, plus whether we've recorded a success.
 export interface AssignedUser {
   experimentKey: string;
@@ -41,6 +58,13 @@ interface ExperimentsState {
   items: Experiment[];
   selectedKey: string | null;
   resultsByKey: Record<string, VariantResult[]>;
+  // Backend-derived stats, pushed from the Python service over SSE. Not persisted — it is
+  // a live view of the server's numbers, re-pushed on reconnect.
+  significanceByKey: Record<string, Significance>;
+  statsConnected: boolean;
+  // True between the Backend tab's Restart wiping local state and the api coming back.
+  // Distinct from `loading`: there is no request in flight, the services are simply down.
+  restarting: boolean;
   lastAssignment: { experimentKey: string; userId: string; variantKey: string; cached: boolean } | null;
   assignments: AssignedUser[];
   loading: boolean;
@@ -51,6 +75,9 @@ const initialState: ExperimentsState = {
   items: [],
   selectedKey: null,
   resultsByKey: {},
+  significanceByKey: {},
+  statsConnected: false,
+  restarting: false,
   lastAssignment: null,
   assignments: [],
   loading: false,
@@ -126,6 +153,24 @@ const slice = createSlice({
     hydrateAssignments(state, action: PayloadAction<AssignedUser[]>) {
       state.assignments = action.payload;
     },
+    // Back to a blank slate. Paired with the Backend tab's Restart, which wipes the
+    // backend's enrollments and recreates the services — so the browser shouldn't keep
+    // holding a board, a selection or cached stats that no longer exist server-side.
+    // The persistence subscriber writes the now-empty board through to localStorage.
+    resetState: () => initialState,
+    // Dispatched right after resetState (which would otherwise clear this flag), and
+    // cleared by the fetchExperiments that fires once the api reports ready.
+    backendRestartStarted(state) {
+      state.restarting = true;
+    },
+    // A frame arrived on the stats SSE stream — the Python service recomputed.
+    significancePushed(state, action: PayloadAction<Significance>) {
+      state.significanceByKey[action.payload.experimentKey] = action.payload;
+      state.statsConnected = true;
+    },
+    statsStreamClosed(state) {
+      state.statsConnected = false;
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -135,11 +180,13 @@ const slice = createSlice({
       })
       .addCase(fetchExperiments.fulfilled, (state, action) => {
         state.loading = false;
+        state.restarting = false;
         state.items = action.payload;
         if (!state.selectedKey && action.payload.length) state.selectedKey = action.payload[0].key;
       })
       .addCase(fetchExperiments.rejected, (state, action) => {
         state.loading = false;
+        state.restarting = false; // the api never came back — show the error, not a spinner
         state.error = action.error.message ?? "Failed to load experiments";
       })
       .addCase(fetchResults.fulfilled, (state, action) => {
@@ -204,5 +251,12 @@ const slice = createSlice({
   },
 });
 
-export const { selectExperiment, hydrateAssignments } = slice.actions;
+export const {
+  selectExperiment,
+  hydrateAssignments,
+  significancePushed,
+  statsStreamClosed,
+  resetState,
+  backendRestartStarted,
+} = slice.actions;
 export default slice.reducer;

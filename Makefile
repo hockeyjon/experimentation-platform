@@ -25,14 +25,18 @@ SSH_KEY          ?= ~/.ssh/experimentation-ec2.pem
 REMOTE_DIR       ?= experimentation
 COMPOSE          := docker compose -f docker-compose.prod.yml
 LOCAL_PORT       ?= 8080
-LOCAL_COMPOSE    := LOCAL_PORT=$(LOCAL_PORT) docker compose -f deploy/docker-compose.local.yml
+WEB_PORT         ?= 3000
+# WEB_ORIGIN must follow WEB_PORT: it becomes logstream's ALLOWED_ORIGIN, so a dev server
+# on another port would otherwise be refused by the Backend tab's endpoints.
+LOCAL_COMPOSE    := LOCAL_PORT=$(LOCAL_PORT) WEB_ORIGIN=http://localhost:$(WEB_PORT) \
+                    docker compose -f deploy/docker-compose.local.yml
 
 RSYNC_EXCLUDES := --exclude node_modules --exclude .next --exclude out --exclude .git \
                   --exclude .venv --exclude web --exclude terraform --exclude .env --exclude .DS_Store
 
 .DEFAULT_GOAL := help
 .PHONY: help build sync invalidate frontend backend seed deploy ssh ps list-backend logs logs-all logs-fresh logs-reset start stop status \
-        local-up local-seed local-web local-logs local-ps local-down
+        local-up local-seed local-web local-web-stop local-bounce local-logs local-ps local-down
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -103,8 +107,50 @@ local-up: ## Start the full stack locally (http://localhost:8080), then `make lo
 local-seed: ## Seed the local database with sample experiments + traffic
 	$(LOCAL_COMPOSE) exec -T api npm run seed
 
+# The dev server runs on the host, so `make local-down` does NOT stop it — leaving it to
+# collide with the next `make local-web`. Fail with the culprit named rather than a bare
+# EADDRINUSE stack trace.
 local-web: ## Run the Next.js dev server against the local stack (hot reload)
-	cd web && NEXT_PUBLIC_GRAPHQL_URL=http://localhost:$(LOCAL_PORT)/ npm run dev
+	@pid=$$(lsof -nP -iTCP:$(WEB_PORT) -sTCP:LISTEN -t 2>/dev/null | head -1); \
+	if [ -n "$$pid" ]; then \
+		echo "Port $(WEB_PORT) is already in use by PID $$pid:"; \
+		ps -o command= -p $$pid | sed 's/^/    /'; \
+		echo ""; \
+		echo "  It may already be serving this app — try http://localhost:$(WEB_PORT) first."; \
+		echo "  Otherwise:  make local-web-stop        (stop it)"; \
+		echo "              make local-web WEB_PORT=3001   (use another port)"; \
+		exit 1; \
+	fi; \
+	cd web && NEXT_PUBLIC_GRAPHQL_URL=http://localhost:$(LOCAL_PORT)/ npx next dev -p $(WEB_PORT)
+
+# One command to get back to a known-good localhost:$(WEB_PORT): stop the dev server (which
+# local-down can't, being a host process), replace the stack, wait for the api to actually
+# serve, reseed, then run the dev server in the foreground. Ctrl+C stops the dev server and
+# leaves the backend up. Add CLEAN=1 to drop the data volumes as well.
+local-bounce: ## Restart everything local and hand back a clean dev server (CLEAN=1 drops volumes)
+	-@$(MAKE) local-web-stop
+	@$(MAKE) local-down
+	@$(MAKE) local-up
+	@printf "  waiting for the api to serve"; \
+	for i in $$(seq 1 60); do \
+		code=$$(curl -s -o /dev/null -w '%{http_code}' -m 3 -XPOST \
+			-H 'Content-Type: application/json' -d '{"query":"{__typename}"}' \
+			http://localhost:$(LOCAL_PORT)/ 2>/dev/null); \
+		if [ "$$code" = "200" ]; then echo " → ready"; break; fi; \
+		printf "."; sleep 2; \
+	done; \
+	if [ "$$code" != "200" ]; then echo " → gave up (last HTTP $$code)"; fi
+	@$(MAKE) local-seed
+	@echo ""
+	@echo "  starting the dev server — http://localhost:$(WEB_PORT)  (Ctrl+C to stop)"
+	@echo "  note: the enrolled-customer board lives in your browser's localStorage."
+	@echo "        Hard-refresh, or use the Backend tab's Restart, to clear it too."
+	@$(MAKE) local-web
+
+local-web-stop: ## Stop the Next.js dev server holding the web port
+	@pid=$$(lsof -nP -iTCP:$(WEB_PORT) -sTCP:LISTEN -t 2>/dev/null | head -1); \
+	if [ -n "$$pid" ]; then kill $$pid && echo "stopped PID $$pid on port $(WEB_PORT)"; \
+	else echo "nothing listening on port $(WEB_PORT)"; fi
 
 local-logs: ## Tail the local app-flow logs (api + stats)
 	$(LOCAL_COMPOSE) logs -f --tail=100 api stats

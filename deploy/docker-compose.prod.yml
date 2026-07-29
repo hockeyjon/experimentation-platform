@@ -32,6 +32,10 @@ services:
       MONGO_DB: experiments_events
       REDIS_URL: redis://redis:6379
       PORT: "4000"
+      # The Python significance service, reachable only on this internal network. The api
+      # relays it to the browser over SSE so it needs no public route of its own.
+      STATS_URL: http://stats:8000
+      STATS_POLL_MS: "3000"
       # Keep the boot output clean: the Prisma CLI otherwise prints a boxed "Update
       # available 6.x -> 7.x" banner on every `db push`, which lands in the log stream.
       # CHECKPOINT_DISABLE also skips the outbound version-check request at startup.

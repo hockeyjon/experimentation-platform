@@ -35,6 +35,8 @@ services:
       MONGO_DB: experiments_events
       REDIS_URL: redis://redis:6379
       PORT: "4000"
+      STATS_URL: http://stats:8000
+      STATS_POLL_MS: "3000"
       # Keep the boot output clean — the CLI's update banner lands in the log stream.
       PRISMA_HIDE_UPDATE_MESSAGE: "true"
       CHECKPOINT_DISABLE: "1"
@@ -58,8 +60,8 @@ services:
     restart: unless-stopped
     environment:
       LOGSTREAM_TOKEN: ${LOGSTREAM_TOKEN:-let-me-see-the-logs}
-      # The Next.js dev server, not the deployed site.
-      ALLOWED_ORIGIN: http://localhost:3000
+      # The Next.js dev server, not the deployed site. Follows WEB_PORT via the Makefile.
+      ALLOWED_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
       MAX_STREAM_SECONDS: "300"
       RESET_COOLDOWN_SECONDS: "10"
       # Must match this file's `name:` — it is how logstream finds the api/stats containers.

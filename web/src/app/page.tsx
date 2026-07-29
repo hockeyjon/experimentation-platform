@@ -4,12 +4,15 @@
 // source of truth for the results table, and it persists across reloads (localStorage).
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useAppDispatch, useAppSelector, loadPersistedAssignments } from "@/store";
+import { useStatsStream } from "@/hooks/useStatsStream";
 import {
   assignUser,
+  backendRestartStarted,
   clearBucket,
   fetchExperiments,
   hydrateAssignments,
   logConversion,
+  resetState,
   selectExperiment,
   setStatus,
   AssignedUser,
@@ -19,7 +22,9 @@ import {
 
 export default function Dashboard() {
   const dispatch = useAppDispatch();
-  const { items, selectedKey, assignments, loading, error } = useAppSelector((s) => s.experiments);
+  const { items, selectedKey, assignments, loading, error, restarting } = useAppSelector(
+    (s) => s.experiments,
+  );
   const [tab, setTab] = useState<"frontend" | "backend">("frontend");
 
   // Load experiments + restore the persisted buckets on mount.
@@ -29,6 +34,10 @@ export default function Dashboard() {
   }, [dispatch]);
 
   const selected = items.find((e) => e.key === selectedKey) ?? null;
+
+  // Hold an SSE connection open for whichever experiment is selected; the Python service's
+  // numbers land in Redux as they change. Re-subscribes on selection change.
+  useStatsStream(selectedKey);
 
   return (
     <>
@@ -58,7 +67,12 @@ export default function Dashboard() {
       <div className="layout" style={{ display: tab === "frontend" ? "grid" : "none" }}>
         <aside className="sidebar">
           <h2>Experiments</h2>
-          {loading && <p className="muted">Loading…</p>}
+          {restarting && (
+            <p className="muted">
+              <span className="spinner" aria-hidden="true" /> Restarting…
+            </p>
+          )}
+          {loading && !restarting && <p className="muted">Loading…</p>}
           {error && <p className="error">{error}</p>}
           {items.map((e) => (
             <button
@@ -84,6 +98,17 @@ export default function Dashboard() {
               <AssignCard key={selected.key} experimentKey={selected.key} variants={selected.variants} />
               <UserBoard experimentKey={selected.key} variants={selected.variants} />
             </>
+          ) : restarting ? (
+            // The backend is genuinely gone for ~20s after Restart — say that, rather than
+            // showing an empty-state prompt that looks like the user forgot to click something.
+            <div className="restart-panel" role="status" aria-live="polite">
+              <span className="spinner spinner-lg" aria-hidden="true" />
+              <p>Restarting the backend…</p>
+              <p className="muted small">
+                api and stats are being recreated. Experiments reload automatically once the API
+                reports ready — usually about 20 seconds.
+              </p>
+            </div>
           ) : (
             <p className="muted">Select an experiment.</p>
           )}
@@ -380,6 +405,15 @@ function BackendLogs({ active }: { active: boolean }) {
       notes.push(await clearAllBuckets());
       setBusyLabel("Recreating api + stats…");
       notes.push(await resetBackend());
+      // Backend enrollments are gone and the services are new, so drop the browser's copy
+      // too: board, selection and cached stats all return to defaults. Done after the
+      // clearing above, which needs the experiment list this wipes. fetchExperiments is
+      // re-issued once the api reports ready, which repopulates the sidebar.
+      dispatch(resetState());
+      // After resetState, which would otherwise clear the flag. Cleared by the
+      // fetchExperiments fired once the api reports ready.
+      dispatch(backendRestartStarted());
+      notes.push("[logstream] local dashboard state reset to defaults");
       // The container is started but node still has to run `prisma db push` and boot, so
       // the spinner stays up until the api announces itself in the stream below.
       setBusyLabel("Waiting for the api to report ready…");
@@ -401,13 +435,19 @@ function BackendLogs({ active }: { active: boolean }) {
         readyRef.current = null;
         setResetting(false);
         setLines((prev) => [...prev, `[logstream] api did not report ready within ${READY_TIMEOUT_S}s`]);
+        // Best effort: try to refill the sidebar anyway rather than leave it empty.
+        dispatch(fetchExperiments());
       }, READY_TIMEOUT_S * 1000);
     }
 
     // Cap the buffer at 800 lines so a long stream can't grow memory without bound.
     ws.onmessage = (e) => {
       const line = String(e.data);
-      if (API_READY.test(line)) clearBusy();
+      if (API_READY.test(line)) {
+        clearBusy();
+        // The api is serving again — refill the sidebar that resetState() emptied.
+        if (restart) dispatch(fetchExperiments());
+      }
       setLines((prev) => [...prev, line].slice(-800));
     };
     ws.onerror = () => setLines((prev) => [...prev, "[logstream] connection error"]);
@@ -566,13 +606,43 @@ function ResultsCard(props: { experiment: Experiment; users: AssignedUser[] }) {
   // The control variant is the one flagged in the experiment definition (not inferred).
   const controlVariant = experiment.variants.find((v) => v.isControl) ?? experiment.variants[0];
 
-  // Per-variant stats computed from the enrolled board.
+  // Backend numbers, pushed from the Python stats service over SSE (see useStatsStream).
+  const pushed = useAppSelector((s) => s.experiments.significanceByKey[experiment.key]);
+  const connected = useAppSelector((s) => s.experiments.statsConnected);
+  const byKey = new Map((pushed?.variants ?? []).map((v) => [v.variantKey, v]));
+  const live = byKey.size > 0;
+
+  // Rows are always driven by the experiment's own variant order, never the payload's, so
+  // a push can't reorder the table under the reader. Until the first frame arrives we fall
+  // back to counting the local board, so the table is never blank.
   const rows = experiment.variants.map((v) => {
+    const stat = byKey.get(v.key);
+    if (stat) {
+      return {
+        v,
+        exposures: stat.exposures,
+        conversions: stat.conversions,
+        rate: stat.conversionRate,
+        lift: stat.liftPct / 100,
+        pValue: stat.pValue,
+        significant: stat.significant,
+      };
+    }
     const inVariant = users.filter((u) => u.variantKey === v.key);
     const exposures = inVariant.length;
     const conversions = inVariant.filter((u) => u.converted).length;
-    return { v, exposures, conversions, rate: exposures > 0 ? conversions / exposures : 0 };
+    return {
+      v,
+      exposures,
+      conversions,
+      rate: exposures > 0 ? conversions / exposures : 0,
+      lift: null,
+      pValue: null,
+      significant: false,
+    };
   });
+
+  // Only needed for the local fallback — when the backend is driving, it sends lift itself.
   const controlRow = rows.find((r) => r.v.key === controlVariant?.key);
   const controlRate = controlRow && controlRow.exposures > 0 ? controlRow.rate : 0;
 
@@ -590,16 +660,20 @@ function ResultsCard(props: { experiment: Experiment; users: AssignedUser[] }) {
         <thead>
           <tr>
             <th>Variant</th>
-            <th>Enrolled</th>
+            <th>Exposures</th>
             <th>Successes</th>
             <th>Success rate</th>
             <th>Lift vs control</th>
+            <th>p-value</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ v, exposures, conversions, rate }) => {
+          {rows.map((row) => {
+            const { v, exposures, conversions, rate } = row;
             const isControl = v.key === controlVariant?.key;
-            const lift = controlRate > 0 && !isControl ? (rate - controlRate) / controlRate : 0;
+            // Backend lift when the stream is driving; otherwise derive it locally.
+            const lift =
+              row.lift ?? (controlRate > 0 && !isControl ? (rate - controlRate) / controlRate : 0);
             return (
               <tr key={v.key}>
                 <td>
@@ -611,11 +685,38 @@ function ResultsCard(props: { experiment: Experiment; users: AssignedUser[] }) {
                 <td className={`num lift ${lift > 0 ? "up" : lift < 0 ? "down" : ""}`}>
                   {isControl ? "—" : `${lift > 0 ? "+" : ""}${(lift * 100).toFixed(1)}%`}
                 </td>
+                <td className="num">
+                  {isControl || row.pValue === null ? (
+                    "—"
+                  ) : (
+                    <span className={row.significant ? "sig" : ""}>
+                      {row.pValue.toFixed(4)}
+                      {row.significant ? " ✓" : ""}
+                    </span>
+                  )}
+                </td>
               </tr>
             );
           })}
         </tbody>
       </table>
+      <p className="muted small">
+        {live && connected ? (
+          <>
+            <span className="live-dot" aria-hidden="true" /> Computed by the Python stats service
+            (two-proportion z-test, α = 0.05) and pushed over SSE. ✓ marks significance.
+          </>
+        ) : live ? (
+          // Numbers stay on screen while we reconnect, but say so — a frozen table that
+          // looks live is worse than a stale one that admits it.
+          <>
+            <span className="spinner" aria-hidden="true" /> Reconnecting to the stats service —
+            figures below are from the last update.
+          </>
+        ) : (
+          "Waiting for the stats service — showing locally counted values."
+        )}
+      </p>
       {users.length === 0 && (
         <p className="muted small">No customers enrolled yet — use the enrollment tools below.</p>
       )}
