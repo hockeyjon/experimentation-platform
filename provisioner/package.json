@@ -1,0 +1,8 @@
+{
+  "name": "experimentation-provisioner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase 2 session provisioner — creates/reaps per-visitor isolated stacks via kubectl.",
+  "scripts": { "start": "node server.js" }
+}

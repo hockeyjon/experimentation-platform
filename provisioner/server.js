@@ -1,0 +1,216 @@
+// Session provisioner (Phase 2) — hands each visitor their own isolated stack.
+//
+// On demand it creates a `session-<id>` namespace, applies the per-session stack
+// (k8s/phase2/session-stack.yaml), waits for the api to come up, seeds it, and reports the
+// session as ready. A visitor's browser heartbeats to keep the session alive; a background
+// reaper deletes namespaces that stop heartbeating or exceed the hard cap on lifetime.
+//
+// Kubernetes namespaces ARE the source of truth (labelled + annotated), so the provisioner is
+// effectively stateless — it can restart and rediscover every live session. It shells out to
+// kubectl, which picks up the in-cluster ServiceAccount automatically (see k8s/phase2/provisioner.yaml).
+//
+// NOT part of the live deploy — this whole directory is Phase 2 scaffolding.
+import http from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+const PORT = Number(process.env.PORT ?? 8090);
+const TOKEN = process.env.PROVISIONER_TOKEN ?? "let-me-see-the-logs";
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? "https://experimentation.gunbarrelstudio.com";
+const MAX_SESSIONS = Number(process.env.MAX_SESSIONS ?? 2); // fits a t3.medium
+const IDLE_TTL_S = Number(process.env.IDLE_TTL_SECONDS ?? 900); // 15 min since last heartbeat
+const MAX_LIFETIME_S = Number(process.env.MAX_LIFETIME_SECONDS ?? 3600); // 1 h hard cap
+const REAP_INTERVAL_MS = Number(process.env.REAP_INTERVAL_MS ?? 60000);
+const STACK = process.env.STACK_PATH ?? "/app/session-stack.yaml";
+
+const LABEL = "app=session-stack";
+const now = () => Date.now();
+
+// --- kubectl helpers --------------------------------------------------------------------
+async function kubectl(args) {
+  const { stdout } = await execFileAsync("kubectl", args, { maxBuffer: 8 * 1024 * 1024 });
+  return stdout;
+}
+
+const nsName = (id) => `session-${id}`;
+const idOf = (ns) => ns.replace(/^session-/, "");
+
+async function listSessions() {
+  const out = await kubectl(["get", "ns", "-l", LABEL, "-o", "json"]).catch(() => '{"items":[]}');
+  const items = JSON.parse(out).items ?? [];
+  return items.map((ns) => {
+    const a = ns.metadata.annotations ?? {};
+    return {
+      id: idOf(ns.metadata.name),
+      status: a["provisioner/status"] ?? "unknown",
+      created: Number(a["provisioner/created"] ?? 0),
+      lastSeen: Number(a["provisioner/last-seen"] ?? 0),
+      phase: ns.status?.phase, // "Active" | "Terminating"
+    };
+  });
+}
+
+// Only sessions that still count against the cap (not mid-teardown).
+const liveSessions = (all) => all.filter((s) => s.phase !== "Terminating");
+
+async function annotate(id, kv) {
+  const pairs = Object.entries(kv).map(([k, v]) => `${k}=${v}`);
+  await kubectl(["annotate", "ns", nsName(id), ...pairs, "--overwrite"]).catch(() => {});
+}
+
+// --- provisioning -----------------------------------------------------------------------
+function newId() {
+  return Math.random().toString(36).slice(2, 8);
+}
+
+async function createSession() {
+  const all = await listSessions();
+  if (liveSessions(all).length >= MAX_SESSIONS) {
+    const err = new Error("at capacity");
+    err.code = "CAPACITY";
+    throw err;
+  }
+  const id = newId();
+  const ns = nsName(id);
+  await kubectl(["create", "namespace", ns]);
+  await kubectl(["label", "ns", ns, LABEL]);
+  await annotate(id, {
+    "provisioner/status": "provisioning",
+    "provisioner/created": now(),
+    "provisioner/last-seen": now(),
+  });
+
+  // Do the slow part (apply → wait → seed) in the background; the caller polls GET /sessions/:id.
+  provision(id, ns).catch(async (e) => {
+    console.error(`[provisioner] ${ns} failed: ${e.message}`);
+    await annotate(id, { "provisioner/status": "failed" });
+  });
+
+  return { id, path: `/s/${id}`, status: "provisioning" };
+}
+
+async function provision(id, ns) {
+  console.log(`[provisioner] provisioning ${ns}`);
+  await kubectl(["apply", "-n", ns, "-f", STACK]);
+  await kubectl(["-n", ns, "rollout", "status", "deploy/api", "--timeout=150s"]);
+  // Seed sample experiments so the session opens on a populated demo.
+  await kubectl(["-n", ns, "exec", "deploy/api", "--", "npm", "run", "seed"]).catch((e) =>
+    console.error(`[provisioner] seed failed for ${ns}: ${e.message}`),
+  );
+  await annotate(id, { "provisioner/status": "ready" });
+  console.log(`[provisioner] ${ns} ready`);
+}
+
+async function deleteSession(id) {
+  await kubectl(["delete", "namespace", nsName(id), "--wait=false"]).catch(() => {});
+}
+
+// --- reaper -----------------------------------------------------------------------------
+async function reap() {
+  const all = await listSessions().catch(() => []);
+  for (const s of liveSessions(all)) {
+    const idleFor = (now() - s.lastSeen) / 1000;
+    const ageFor = (now() - s.created) / 1000;
+    // Reap failed provisions (they hold a slot but will never come up), plus idle/expired ones.
+    if (s.status === "failed" || idleFor > IDLE_TTL_S || ageFor > MAX_LIFETIME_S) {
+      console.log(
+        `[provisioner] reaping ${nsName(s.id)} (${s.status}, idle ${idleFor | 0}s, age ${ageFor | 0}s)`,
+      );
+      await deleteSession(s.id);
+    }
+  }
+}
+
+// --- HTTP -------------------------------------------------------------------------------
+function gate(req, res, url, method) {
+  const cors = {
+    "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "content-type",
+    Vary: "Origin",
+  };
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, cors).end();
+    return null;
+  }
+  if (req.method !== method) {
+    res.writeHead(405, cors).end("method");
+    return null;
+  }
+  if (req.headers.origin && req.headers.origin !== ALLOWED_ORIGIN) {
+    res.writeHead(403, cors).end("origin");
+    return null;
+  }
+  if (url.searchParams.get("token") !== TOKEN) {
+    res.writeHead(401, cors).end("unauthorized");
+    return null;
+  }
+  return { ...cors, "Content-Type": "application/json" };
+}
+
+const send = (res, headers, code, body) => res.writeHead(code, headers).end(JSON.stringify(body));
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, "http://x");
+  const p = url.pathname;
+
+  try {
+    if (p === "/healthz") return void res.writeHead(200).end("ok");
+
+    // GET /sessions/capacity → { active, max, available }
+    if (p === "/sessions/capacity") {
+      const json = gate(req, res, url, "GET");
+      if (!json) return;
+      const active = liveSessions(await listSessions()).length;
+      return send(res, json, 200, { active, max: MAX_SESSIONS, available: Math.max(0, MAX_SESSIONS - active) });
+    }
+
+    // POST /sessions → create one (or 429 at capacity)
+    if (p === "/sessions" && req.method === "POST") {
+      const json = gate(req, res, url, "POST");
+      if (!json) return;
+      try {
+        return send(res, json, 202, await createSession());
+      } catch (e) {
+        if (e.code === "CAPACITY") return send(res, json, 429, { error: "at capacity", retryAfter: 30 });
+        throw e;
+      }
+    }
+
+    // /sessions/:id  (GET status, POST heartbeat via /heartbeat, DELETE teardown)
+    const m = p.match(/^\/sessions\/([a-z0-9]+)(\/heartbeat)?$/);
+    if (m) {
+      const id = m[1];
+      const heartbeat = Boolean(m[2]);
+      if (heartbeat) {
+        const json = gate(req, res, url, "POST");
+        if (!json) return;
+        await annotate(id, { "provisioner/last-seen": now() });
+        return send(res, json, 200, { ok: true });
+      }
+      if (req.method === "DELETE") {
+        const json = gate(req, res, url, "DELETE");
+        if (!json) return;
+        await deleteSession(id);
+        return send(res, json, 200, { deleted: true });
+      }
+      const json = gate(req, res, url, "GET");
+      if (!json) return;
+      const s = (await listSessions()).find((x) => x.id === id);
+      if (!s) return send(res, json, 404, { error: "no such session" });
+      return send(res, json, 200, { id, status: s.status, path: `/s/${id}` });
+    }
+
+    res.writeHead(404).end("not found");
+  } catch (e) {
+    console.error(`[provisioner] ${req.method} ${p} → ${e.message}`);
+    res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: e.message }));
+  }
+});
+
+setInterval(() => reap().catch((e) => console.error(`[provisioner] reap: ${e.message}`)), REAP_INTERVAL_MS);
+server.listen(PORT, () =>
+  console.log(`[provisioner] listening on :${PORT} — cap ${MAX_SESSIONS}, idle TTL ${IDLE_TTL_S}s`),
+);

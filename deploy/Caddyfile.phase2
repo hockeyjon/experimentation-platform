@@ -1,0 +1,49 @@
+# Phase 2 routing — proven on the dev cluster (2026-07-30), not yet the live Caddyfile (that's
+# deploy/Caddyfile). Swaps in at cutover. The dynamic-upstream + prefix-strip syntax below was
+# validated end to end against a live session: /provision, /s/<id>/ (GraphQL), /s/<id>/logstream
+# (WS 101 upgrade), and the shared fallback all route correctly.
+#
+# Gotcha fixed while proving it out: reverse_proxy placeholders (the {re.*.1} session id) are NOT
+# allowed when the upstream has a scheme — so the dynamic upstreams below are bare host:port
+# (reverse_proxy defaults to plain HTTP), NOT http://…
+#
+# Model (path-based, no DNS/cert changes): api.gunbarrelstudio.com/s/<id>/… → that session's
+# services, by in-cluster DNS (api.session-<id>.svc.cluster.local). Caddy strips the /s/<id>
+# prefix so each backend sees its normal paths. The provisioner control API lives at /provision.
+api.gunbarrelstudio.com {
+	# Provisioner: create / poll / heartbeat / delete sessions (browser → provisioner Service).
+	handle /provision* {
+		uri strip_prefix /provision
+		reverse_proxy provisioner:8090
+	}
+
+	# A session's log stream: /s/<id>/logstream… → logstream in namespace session-<id>.
+	@session_logstream path_regexp sls ^/s/([a-z0-9]+)/logstream
+	handle @session_logstream {
+		uri replace /s/{re.sls.1} ""
+		reverse_proxy logstream.session-{re.sls.1}.svc.cluster.local:8080
+	}
+
+	# Everything else under a session: /s/<id>/… → api in namespace session-<id>.
+	@session path_regexp s ^/s/([a-z0-9]+)(/.*)?$
+	handle @session {
+		uri replace /s/{re.s.1} ""
+		reverse_proxy api.session-{re.s.1}.svc.cluster.local:4000
+	}
+
+	# Fallback: the shared Phase-1 stack (keep until sessions fully replace it, or drop it so a
+	# session is mandatory).
+	handle /logstream* {
+		reverse_proxy logstream:8080
+	}
+	handle {
+		reverse_proxy api:4000
+	}
+}
+
+# Verified on dev (all four previously-open questions, now resolved):
+#   ✓ Caddy resolves the placeholder upstream's DNS per-request (session api + logstream both reached).
+#   ✓ `uri replace /s/<id> ""` leaves the api path at "/" (GraphQL 200) and "/logstream" intact (WS 101).
+#   ✓ WebSocket upgrade survives the rewrite — 101 Switching Protocols + valid Sec-WebSocket-Accept.
+#   ✓ handle/matcher ordering: /s/<id>/logstream hits logstream, /s/<id>/… hits api, bare /logstream
+#     + / hit the shared fallback. Source order among handle blocks is honored.

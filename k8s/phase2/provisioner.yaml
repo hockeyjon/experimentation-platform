@@ -1,0 +1,93 @@
+# Phase 2 — the session provisioner, run in the `experimentation` (control-plane) namespace
+# alongside the shared Caddy edge. It needs cluster scope to create/tear down session namespaces
+# and everything inside them.
+#
+# NOT part of the live deploy (k8s/phase2/ is skipped by `kubectl apply -f k8s/`). Two things
+# must exist before applying this — see k8s/phase2/README-PHASE2 / PHASE2.md:
+#   1. a `session-stack` ConfigMap built from k8s/phase2/session-stack.yaml, and
+#   2. the label `tier=control-plane` on the experimentation namespace (for the session NetworkPolicy).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: provisioner
+  namespace: experimentation
+---
+# Cluster scope: create session namespaces + all the resources the session stack contains, and
+# exec into the api pod to seed. The pods + pods/log + roles verbs are required so the provisioner
+# is allowed to create the session's own logstream Role (RBAC escalation prevention). Broad but
+# explicit — could be tightened once the exact resource set stops changing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: provisioner
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "delete", "get", "list", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "secrets", "serviceaccounts", "resourcequotas", "limitranges", "persistentvolumeclaims", "events"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["create", "get", "list", "delete", "patch", "bind", "escalate"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "get", "list", "delete", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: provisioner
+subjects:
+  - kind: ServiceAccount
+    name: provisioner
+    namespace: experimentation
+roleRef:
+  kind: ClusterRole
+  name: provisioner
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provisioner
+  namespace: experimentation
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: provisioner } }
+  template:
+    metadata: { labels: { app: provisioner } }
+    spec:
+      serviceAccountName: provisioner
+      containers:
+        - name: provisioner
+          image: experimentation-provisioner:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: PROVISIONER_TOKEN, value: let-me-see-the-logs }
+            - { name: ALLOWED_ORIGIN, value: "https://experimentation.gunbarrelstudio.com" }
+            - { name: MAX_SESSIONS, value: "2" }
+            - { name: IDLE_TTL_SECONDS, value: "900" }
+            - { name: MAX_LIFETIME_SECONDS, value: "3600" }
+            - { name: STACK_PATH, value: "/config/session-stack.yaml" }
+          ports: [{ containerPort: 8090 }]
+          volumeMounts:
+            - { name: session-stack, mountPath: /config }
+      volumes:
+        - name: session-stack
+          configMap: { name: session-stack } # built from k8s/phase2/session-stack.yaml at deploy time
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: provisioner
+  namespace: experimentation
+spec:
+  selector: { app: provisioner }
+  ports: [{ port: 8090, targetPort: 8090 }]
