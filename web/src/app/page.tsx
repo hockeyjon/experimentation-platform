@@ -238,13 +238,28 @@ async function fetchContainers(): Promise<string[]> {
 // scannable by subsystem. A <pre> renders those escapes as literal junk, so translate the
 // codes the logger emits into spans. Codes we don't map are dropped rather than shown.
 const ANSI_COLOR: Record<string, string> = {
-  "32": "#4ade80", // green  — assignUser
-  "34": "#60a5fa", // blue   — graphql
-  "36": "#22d3ee", // cyan   — lifecycle (launch / rollback)
-  "33": "#facc15", // yellow — postgres
-  "38;5;208": "#fb923c", // orange — mongo
-  "38;5;141": "#a78bfa", // violet — redis
+  "32": "#4ade80", // green   — assignUser
+  "34": "#60a5fa", // blue    — graphql
+  "36": "#22d3ee", // cyan    — lifecycle (launch / rollback)
+  "33": "#facc15", // yellow  — postgres
+  "38;5;208": "#fb923c", // orange  — mongo
+  "38;5;141": "#a78bfa", // violet  — redis
+  "35": "#e879f9", // magenta — [stats]
+  "38;5;37": "#2dd4bf", // teal    — [api:logEvent]
+  "38;5;245": "#94a3b8", // slate   — [logstream]
 };
+
+// A few tags come from sources that don't emit ANSI themselves — the Python stats service,
+// the logstream service, and the api's uncolored logEvent scope. Wrap those tags in the ANSI
+// codes above so the same AnsiLine renderer colors them. Run on each line before rendering.
+const TAG_ANSI: Array<[RegExp, string]> = [
+  [/\[stats\]/g, "\x1b[35m$&\x1b[0m"],
+  [/\[api:logEvent\]/g, "\x1b[38;5;37m$&\x1b[0m"],
+  [/\[logstream\]/g, "\x1b[38;5;245m$&\x1b[0m"],
+];
+function colorizeTags(line: string): string {
+  return TAG_ANSI.reduce((s, [re, rep]) => s.replace(re, rep), line);
+}
 
 function AnsiLine({ text }: { text: string }) {
   // Capturing split → [text, code, text, code, …]: odd entries are the SGR codes.
@@ -691,7 +706,7 @@ function BackendLogs({
       </div>
         <pre className="log-view" ref={viewRef} aria-busy={resetting}>
           {lines.length
-            ? lines.map((line, i) => <AnsiLine key={i} text={line} />)
+            ? lines.map((line, i) => <AnsiLine key={i} text={colorizeTags(line)} />)
             : resetting
               ? busyLabel
               : 'Click "Stream backend logs" to begin.'}
