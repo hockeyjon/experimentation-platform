@@ -448,6 +448,7 @@ function BackendLogs({
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const readyRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewRef = useRef<HTMLPreElement | null>(null);
+  const prevTourStep = useRef(tourStep); // to detect the finale modal closing (12 → 0)
 
   // Drop the spinner: the api announced itself, or we gave up waiting.
   const clearBusy = () => {
@@ -503,6 +504,24 @@ function BackendLogs({
   // Tour finale: land on the Logging sub-tab so the completion modal reveals the live stream.
   useEffect(() => {
     if (tourStep === 12) setSubTab("logging");
+  }, [tourStep]);
+
+  // Tour finale: when "End tour" closes the modal (12 → 0), wait for the revealed log to
+  // render, then a beat (500ms), then scroll to the newest lines.
+  useEffect(() => {
+    const wasFinale = prevTourStep.current === 12;
+    prevTourStep.current = tourStep;
+    if (!wasFinale || tourStep !== 0) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const raf = requestAnimationFrame(() => {
+      timer = setTimeout(() => {
+        if (viewRef.current) viewRef.current.scrollTop = viewRef.current.scrollHeight;
+      }, 500);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      if (timer) clearTimeout(timer);
+    };
   }, [tourStep]);
 
   // "Clear buckets" for every experiment — the same mutation the Frontend tab's button
@@ -1080,14 +1099,20 @@ function UserBoard(props: {
     }
   }, [props.tourStep]);
 
-  function seed() {
+  async function seed() {
     const mkId = () => `cust_${Math.random().toString(36).slice(2, 8)}`;
     // Seed 5 customers into EVERY variant — handles 2-arm and multi-arm experiments.
+    const pending = [];
     for (const v of props.variants) {
       for (let i = 0; i < 5; i++) {
-        dispatch(assignUser({ key: props.experimentKey, userId: mkId(), variantKey: v.key }));
+        pending.push(
+          dispatch(assignUser({ key: props.experimentKey, userId: mkId(), variantKey: v.key })).unwrap(),
+        );
       }
     }
+    // Once the seeded customers have landed in the board, scroll to the newest at the bottom.
+    await Promise.allSettled(pending);
+    setTimeout(() => boardRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }), 100);
   }
 
   return (
