@@ -26,9 +26,10 @@ export default function Dashboard() {
     (s) => s.experiments,
   );
   const [tab, setTab] = useState<"frontend" | "backend">("frontend");
-  // First-load welcome / tour prompt. Shows on every load for now (good for demos); can be
-  // gated to once-per-visitor via localStorage later if we want.
-  const [showWelcome, setShowWelcome] = useState(true);
+  // First-load entry modal. Starts "checking" (logo + title + spinner shown immediately), then
+  // resolves to "welcome" (offer the tour) or "busy" (another session holds the single stream —
+  // don't lead a second visitor into a tour they can't finish). "done" once dismissed.
+  const [entryState, setEntryState] = useState<"checking" | "welcome" | "busy" | "done">("checking");
   // Guided tour progress. 0 = not running; each step drives a toast tip (+ any navigation).
   const [tourStep, setTourStep] = useState(0);
 
@@ -37,6 +38,27 @@ export default function Dashboard() {
     dispatch(fetchExperiments());
     dispatch(hydrateAssignments(loadPersistedAssignments()));
   }, [dispatch]);
+
+  // On load, atomically claim the single session slot: if we get it, show the welcome/tour and
+  // hold the slot with a heartbeat until the tab closes; if another session already holds it,
+  // show the busy modal. The logo + title are visible under a spinner in the meantime.
+  useEffect(() => {
+    let cancelled = false;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    claimSession().then((claimed) => {
+      if (cancelled) return;
+      setEntryState(claimed ? "welcome" : "busy");
+      if (claimed) heartbeat = setInterval(() => claimSession(), CLAIM_HEARTBEAT_MS);
+    });
+    const onHide = () => releaseSession();
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      cancelled = true;
+      if (heartbeat) clearInterval(heartbeat);
+      window.removeEventListener("pagehide", onHide);
+      releaseSession();
+    };
+  }, []);
 
   const selected = items.find((e) => e.key === selectedKey) ?? null;
 
@@ -58,11 +80,12 @@ export default function Dashboard() {
 
   return (
     <>
-      {showWelcome && (
-        <WelcomeModal
-          onSkip={() => setShowWelcome(false)}
+      {entryState !== "done" && (
+        <EntryModal
+          state={entryState}
+          onSkip={() => setEntryState("done")}
           onStartTour={() => {
-            setShowWelcome(false);
+            setEntryState("done");
             setTab("backend"); // step 1: over to the Backend (log stream) tab
             setTourStep(1);
           }}
@@ -198,6 +221,49 @@ async function resetBackend(): Promise<string> {
   }
 }
 
+// --- Single-session claim ---------------------------------------------------------------
+// Only one session runs at a time. Rather than a race-prone status *check*, the app atomically
+// CLAIMS the slot the moment a visitor lands (see the Dashboard mount effect), holds it with a
+// heartbeat while the tab is open, and releases it on unload.
+
+// How often the holding tab re-claims to keep its lease alive (server lease is 20s).
+const CLAIM_HEARTBEAT_MS = 7000;
+
+// A per-tab session id — survives reload (sessionStorage), gone when the tab closes.
+function sessionId(): string {
+  if (typeof window === "undefined") return "";
+  let id = window.sessionStorage.getItem("exp-session-id");
+  if (!id) {
+    id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    window.sessionStorage.setItem("exp-session-id", id);
+  }
+  return id;
+}
+
+const claimUrl = (path: "claim" | "release") =>
+  `${API_BASE}/logstream/${path}?token=${encodeURIComponent(LOGSTREAM_TOKEN)}&session=${encodeURIComponent(sessionId())}`;
+
+// Claim (or extend) the single session slot. Returns whether WE hold it. Fails open (true) on
+// error so a transient hiccup never wrongly blocks the primary user.
+async function claimSession(): Promise<boolean> {
+  try {
+    const res = await fetch(claimUrl("claim"), { method: "POST" });
+    if (!res.ok) return true;
+    const { claimed } = await res.json();
+    return !!claimed;
+  } catch {
+    return true;
+  }
+}
+
+function releaseSession(): void {
+  try {
+    navigator.sendBeacon(claimUrl("release"));
+  } catch {
+    /* ignore */
+  }
+}
+
 type ContainerRow = {
   name: string;
   image: string;
@@ -328,38 +394,125 @@ function Modal(props: {
   );
 }
 
-// First-load welcome dialog that offers the guided tour. Uses the same backdrop/panel
-// chrome as Modal, but with a centered layout and the logo up top.
-function WelcomeModal({ onSkip, onStartTour }: { onSkip: () => void; onStartTour: () => void }) {
+// First-load entry modal. The logo + title show immediately; the body is a spinner while we
+// check whether the single backend stream is free, then swaps to the welcome/tour or, if
+// another session already holds the stream, the "in use / Phase 2" message. Reused by the
+// Backend tab (state="busy") when a stream-start is attempted while busy.
+function EntryModal({
+  state,
+  onSkip,
+  onStartTour,
+  onDismiss,
+  dismissible = false,
+}: {
+  state: "checking" | "welcome" | "busy";
+  onSkip?: () => void;
+  onStartTour?: () => void;
+  onDismiss?: () => void;
+  dismissible?: boolean;
+}) {
   const titleId = useId();
+  // Backdrop / Escape dismissal only when explicitly allowed AND in the busy state. Welcome is
+  // button-only and checking can't be dismissed — matching the take-tour dialog. The on-load
+  // busy modal is a hard block (dismissible=false); the Backend-tab one opts in so a user who
+  // just lost the stream race isn't locked out of the app they were already using.
+  const canDismiss = dismissible && state === "busy";
 
-  // Deliberately NOT dismissible by backdrop click or Escape — the only ways out are the
-  // "Skip" and "Take the tour" buttons. (No onClick on the backdrop, no Escape listener.)
+  useEffect(() => {
+    if (!canDismiss) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onDismiss?.();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [canDismiss, onDismiss]);
+
   return (
-    <div className="modal-backdrop">
+    <div className="modal-backdrop" onClick={canDismiss ? onDismiss : undefined}>
       <div
         className="modal welcome-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        onClick={(e) => e.stopPropagation()}
       >
         <img className="welcome-logo" src="/logo.png" alt="Experimentation Platform logo" />
         <h3 id={titleId}>Welcome to the Experimentation Platform</h3>
-        <p>A working, full-stack A/B experimentation demo. Would you like a quick guided tour?</p>
-        <div className="modal-actions welcome-actions">
-          <button className="ghost" onClick={onSkip}>
-            Skip
-          </button>
-          <button className="primary" autoFocus onClick={onStartTour}>
-            Take the tour
-          </button>
-        </div>
+
+        {state === "checking" && (
+          <div className="entry-loading" role="status" aria-live="polite">
+            <span className="spinner spinner-lg" aria-hidden="true" />
+          </div>
+        )}
+
+        {state === "welcome" && (
+          <>
+            <p>A working, full-stack A/B experimentation demo. Would you like a quick guided tour?</p>
+            <div className="modal-actions welcome-actions">
+              <button className="ghost" onClick={onSkip}>
+                Skip
+              </button>
+              <button className="primary" autoFocus onClick={onStartTour}>
+                Take the tour
+              </button>
+            </div>
+            <PhasePanels />
+          </>
+        )}
+
+        {state === "busy" && (
+          <>
+            <p>
+              The backend is currently in use by another session. Running more than one session at a
+              time isn&apos;t implemented yet — that&apos;s Phase 2. See the Phase 2 description below.
+            </p>
+            <PhasePanels />
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-// Tour completion dialog — same chrome as WelcomeModal (logo on top, button-only), shown
+// The Phase 1 / Phase 2 panels, shared by the welcome modal and the stream-busy modal.
+function PhasePanels() {
+  return (
+    <div className="phase-cards">
+      <section className="phase-card done">
+        <h4>Phase 1</h4>
+        <div className="phase-status">✓ Complete</div>
+        <p>
+          A working, full-stack experimentation platform — create experiments, bucket users, log
+          events, and see live significance — deployed on AWS and running on <strong>k3s</strong>{" "}
+          (Kubernetes) behind Caddy, with a guided tour of the whole flow.
+        </p>
+        <div className="phase-stack">
+          <code>Next.js · Redux</code>
+          <code>GraphQL · Prisma</code>
+          <code>Postgres</code>
+          <code>MongoDB</code>
+          <code>Redis</code>
+          <code>Python/FastAPI</code>
+          <code>k3s</code>
+          <code>AWS</code>
+          <code>EC2</code>
+          <code>S3</code>
+          <code>CloudFront</code>
+        </div>
+      </section>
+      <section className="phase-card soon">
+        <h4>Phase 2</h4>
+        <div className="phase-status">⚙ Coming soon</div>
+        <p>
+          Moving to <strong>per-session isolation</strong>: each visitor will get their own private,
+          namespace-isolated stack on Kubernetes — a self-hosted stand-in for EKS.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+// Tour completion dialog — same welcome-modal chrome (logo on top, button-only), shown
 // when the tour ends back on the Backend log stream.
 function TourDoneModal({ onEnd }: { onEnd: () => void }) {
   const titleId = useId();
@@ -453,6 +606,7 @@ function BackendLogs({
   const [streaming, setStreaming] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [choosing, setChoosing] = useState(false);
+  const [streamBusy, setStreamBusy] = useState(false);
   const [subTab, setSubTab] = useState<"logging" | "services">("logging");
   const [checking, setChecking] = useState(false);
   const [serviceLines, setServiceLines] = useState<string[]>([]);
@@ -678,7 +832,14 @@ function BackendLogs({
           <span className="tour-anchor">
             <button
               className="primary"
-              onClick={() => {
+              onClick={async () => {
+                // Backstop: we normally already hold the session claim (taken on load), but
+                // re-claim to be sure. If we've somehow lost it, don't start the disruptive
+                // restart flow — show the "in use" modal instead.
+                if (!(await claimSession())) {
+                  setStreamBusy(true);
+                  return;
+                }
                 setChoosing(true); // straight to the restart choice (no intermediate dialog)
                 if (tourStep === 1) setTourStep(2); // advance the tour to the Restart tip
               }}
@@ -764,6 +925,7 @@ function BackendLogs({
           }}
         />
       )}
+      {streamBusy && <EntryModal state="busy" dismissible onDismiss={() => setStreamBusy(false)} />}
     </div>
   );
 }
@@ -1079,8 +1241,8 @@ function AssignCard(props: {
         {pill &&
           (pill.cached ? (
             <div className="result-pill danger">
-              Customer <strong>{pill.userId}</strong> already exists — found in Redis cache (variant{" "}
-              <strong>{variantLabel(pill.variantKey)}</strong>)
+              Rejected — <strong>{pill.userId}</strong> already exists, kept in variant{" "}
+              <strong>{variantLabel(pill.variantKey)}</strong> (not reassigned)
             </div>
           ) : (
             <div className="result-pill success">

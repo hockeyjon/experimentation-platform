@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Experimentation Platform — Upgrading</title>
+    <link rel="icon" href="/logo.png" />
+    <meta name="robots" content="noindex" />
+    <style>
+      :root {
+        --bg: #0b1220;
+        --panel: #131c2e;
+        --panel-2: #1b2740;
+        --border: #26324d;
+        --text: #e6ecf7;
+        --muted: #93a1bd;
+        --accent: #4f8cff;
+        --good: #35c98b;
+        --warn: #f5a623;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        background: radial-gradient(1200px 600px at 50% -10%, #16233c 0%, var(--bg) 60%);
+        color: var(--text);
+        font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        display: flex; align-items: center; justify-content: center;
+        padding: 32px;
+      }
+      .wrap { width: 100%; max-width: 680px; text-align: center; }
+      .logo { width: 92px; height: auto; margin: 0 auto 20px; display: block; }
+      h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: -0.01em; }
+      .lead { color: var(--muted); font-size: 16px; margin: 0 auto 8px; max-width: 52ch; }
+      .pill {
+        display: inline-block; margin: 14px 0 18px; padding: 5px 14px; border-radius: 999px;
+        font-size: 13px; color: var(--warn); border: 1px solid var(--warn); background: rgba(245,166,35,0.08);
+      }
+      .headline {
+        font-size: 21px; font-weight: 600; color: var(--text);
+        margin: 0 auto 28px; max-width: 42ch; letter-spacing: -0.01em;
+      }
+      .cards { display: grid; gap: 14px; text-align: left; }
+      @media (min-width: 620px) { .cards { grid-template-columns: 1fr 1fr; } }
+      .card {
+        background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px;
+      }
+      .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 4px; color: var(--muted); }
+      .card .status { font-weight: 600; font-size: 15px; margin-bottom: 10px; }
+      .card.done .status { color: var(--good); }
+      .card.wip .status { color: var(--warn); }
+      .card p { margin: 0; font-size: 14px; color: var(--muted); }
+      .card p strong { color: var(--text); font-weight: 600; }
+      .stack { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+      .stack code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+        padding: 1px 6px; margin: 2px 4px 0 0; display: inline-block; color: var(--text);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <img class="logo" src="/logo.png" alt="Experimentation Platform" />
+      <h1>Experimentation Platform</h1>
+      <p class="lead">A full-stack A/B experimentation demo, built on the same stack a modern data-platform team runs.</p>
+      <div class="pill">⚙ Upgrading</div>
+
+      <h2 class="headline">The demo will be back once Phase 2 lands. Thanks for your patience.</h2>
+
+      <div class="cards">
+        <section class="card done">
+          <h2>Phase 1</h2>
+          <div class="status">✓ Complete</div>
+          <p>
+            A working, full-stack experimentation platform — create experiments, bucket users,
+            log events, and see live significance — deployed on AWS and running on
+            <strong>k3s</strong> (Kubernetes) behind Caddy, with a guided tour of the whole flow.
+          </p>
+          <div class="stack">
+            <code>Next.js · Redux</code><code>GraphQL · Prisma</code><code>Postgres</code>
+            <code>MongoDB</code><code>Redis</code><code>Python/FastAPI</code><code>k3s</code>
+            <code>AWS</code><code>EC2</code><code>S3</code><code>CloudFront</code>
+          </div>
+        </section>
+
+        <section class="card wip">
+          <h2>Phase 2</h2>
+          <div class="status">⚙ In progress</div>
+          <p>
+            Moving to <strong>per-session isolation</strong>: each visitor gets their own private,
+            namespace-isolated stack on Kubernetes — a self-hosted stand-in for EKS. That's the
+            work happening right now, which is why the live demo is briefly offline.
+          </p>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

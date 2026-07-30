@@ -210,11 +210,42 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/healthz") return res.writeHead(200).end("ok");
   if (url.pathname === "/logstream/reset") return handleReset(req, res, url);
   if (url.pathname === "/logstream/containers") return handleContainers(req, res, url);
+  if (url.pathname === "/logstream/claim") return handleClaim(req, res, url);
+  if (url.pathname === "/logstream/release") return handleRelease(req, res, url);
   res.writeHead(426).end("Upgrade Required");
 });
 const wss = new WebSocketServer({ server, path: "/logstream" });
 
 let active = null; // enforce a single concurrent stream
+
+// Single-session claim: the app claims this the moment a visitor lands on the welcome/tour, so
+// a second visitor is turned away up front — not only once someone starts a stream. A heartbeat
+// re-claim keeps it alive; the lease means a closed tab frees the slot even if release is missed.
+let claim = null; // { id, expires }
+const CLAIM_LEASE_MS = Number(process.env.CLAIM_LEASE_SECONDS ?? 20) * 1000;
+const claimHeld = () => claim !== null && claim.expires > Date.now();
+
+// POST /logstream/claim?session=<id> — grant/extend the slot if it's free/expired or already
+// ours. Returns { claimed }.
+function handleClaim(req, res, url) {
+  const json = gate(req, res, url, "POST");
+  if (!json) return;
+  const id = url.searchParams.get("session");
+  if (!id) return res.writeHead(400, json).end(JSON.stringify({ error: "missing session" }));
+  if (!claimHeld() || claim.id === id) {
+    claim = { id, expires: Date.now() + CLAIM_LEASE_MS };
+    return res.writeHead(200, json).end(JSON.stringify({ claimed: true }));
+  }
+  return res.writeHead(200, json).end(JSON.stringify({ claimed: false }));
+}
+
+// POST /logstream/release?session=<id> — free the slot if it's ours (best-effort, on unload).
+function handleRelease(req, res, url) {
+  const json = gate(req, res, url, "POST");
+  if (!json) return;
+  if (claimHeld() && claim.id === url.searchParams.get("session")) claim = null;
+  return res.writeHead(200, json).end(JSON.stringify({ released: true }));
+}
 
 wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, "http://x");

@@ -75,6 +75,13 @@ frontend: ## Full frontend deploy: build -> sync -> invalidate
 	$(MAKE) sync
 	$(MAKE) invalidate
 
+.PHONY: maintenance
+maintenance: ## Put the static "under construction" page at the site root (S3 only, no EC2)
+	aws s3 cp web/maintenance/index.html s3://$(BUCKET)/index.html \
+		--content-type "text/html; charset=utf-8" --cache-control "no-cache"
+	$(MAKE) invalidate
+	@echo "✓ Maintenance page live at https://experimentation.gunbarrelstudio.com/ — restore with: make frontend"
+
 # --- backend ---------------------------------------------------------------
 # Caddy is recreated explicitly on every deploy. rsync replaces ./Caddyfile with a NEW
 # inode, and Docker's single-file bind mount follows the inode the container started with —

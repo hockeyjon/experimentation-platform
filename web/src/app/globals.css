@@ -113,11 +113,31 @@ a { color: var(--accent); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
 /* Welcome / tour intro modal — centered layout with the logo on top. */
-.welcome-modal { width: min(440px, 100%); text-align: center; }
+.welcome-modal { width: min(460px, 100%); text-align: center; max-height: calc(100vh - 48px); overflow-y: auto; }
 .welcome-logo { display: block; width: 112px; height: auto; margin: 4px auto 18px; }
 .welcome-modal h3 { font-size: 19px; margin-bottom: 8px; }
 .welcome-modal p { font-size: 14px; }
 .welcome-actions { justify-content: center; margin-top: 22px; }
+/* Entry modal loading state: the logo + title are up top; this holds the spinner while we
+   resolve whether the stream is free (welcome vs busy). */
+.entry-loading { display: flex; justify-content: center; padding: 28px 0 20px; }
+
+/* Phase panels at the bottom of the welcome modal — mirrors the maintenance page (distinct
+   class names so they don't inherit the app's full-size .card styles). */
+.phase-cards { display: grid; gap: 12px; text-align: left; margin-top: 24px; }
+.phase-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.phase-card h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 4px; color: var(--muted); }
+.phase-status { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+.phase-card.done .phase-status { color: var(--good); }
+.phase-card.soon .phase-status { color: var(--warn); }
+.phase-card p { font-size: 13px; line-height: 1.5; color: var(--muted); margin: 0; }
+.phase-card p strong { color: var(--text); font-weight: 600; }
+.phase-stack { margin-top: 8px; }
+.phase-stack code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 1px 6px; margin: 2px 4px 0 0; display: inline-block; font-size: 11.5px; color: var(--text);
+}
 /* Tour completion: the celebration emoji on its own line at 2× the message text (scoped
    under .welcome-modal to outrank `.welcome-modal p`), and it pops — enlarges — on appear. */
 .welcome-modal .tour-done-emoji {

@@ -216,28 +216,15 @@ export const resolvers = {
         include: { variant: true },
       });
       if (existing) {
-        // Explicit variant that differs from the current one? Override (reassign).
-        if (forced && forced.key !== existing.variant.key) {
-          const where = { id: existing.id };
-          const data = { variantId: forced.id };
-          log.write("postgres", "assignment.update", {
-            where,
-            data,
-            // ids alone are opaque — spell out the move this row represents.
-            meaning: `${args.userId} in ${args.experimentKey}: ${existing.variant.key} → ${forced.key}`,
-          });
-          await prisma.assignment.update({ where, data });
-          await cacheAssignment(cacheKey, forced.key);
-          await logEvent(args.experimentKey, forced.key, args.userId, "exposure");
-          log.info("assignUser", `override → moved ${args.userId} to variant ${forced.key}`);
-          return { experimentKey: args.experimentKey, userId: args.userId, variantKey: forced.key, cached: false };
-        }
-        // Otherwise keep it sticky. Still log an exposure (the user saw it again).
+        // Sticky and final: once a user is bucketed they stay in that variant. A repeat create
+        // — even one that names a different variant — is REJECTED, not a reassignment (a real
+        // platform never moves a bucketed user). Re-warm the cache so the sticky lookup is a
+        // Redis hit, but log NO new exposure, so a duplicate create can't inflate the counts or
+        // strand an exposure in another bucket.
         await cacheAssignment(cacheKey, existing.variant.key);
-        await logEvent(args.experimentKey, existing.variant.key, args.userId, "exposure");
         log.info(
           "assignUser",
-          `sticky → ${args.userId} already in ${existing.variant.key} (from Postgres, cache refreshed)`,
+          `rejected → ${args.userId} already in ${existing.variant.key}; kept there (no reassignment)`,
         );
         return { experimentKey: args.experimentKey, userId: args.userId, variantKey: existing.variant.key, cached: true };
       }
