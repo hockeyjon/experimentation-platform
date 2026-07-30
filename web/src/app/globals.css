@@ -118,6 +118,24 @@ a { color: var(--accent); }
 .welcome-modal h3 { font-size: 19px; margin-bottom: 8px; }
 .welcome-modal p { font-size: 14px; }
 .welcome-actions { justify-content: center; margin-top: 22px; }
+/* Tour completion: the celebration emoji on its own line at 2× the message text (scoped
+   under .welcome-modal to outrank `.welcome-modal p`), and it pops — enlarges — on appear. */
+.welcome-modal .tour-done-emoji {
+  font-size: 2em; line-height: 1; margin: 6px 0 0;
+  animation: emoji-pop 850ms ease-in-out;
+}
+@keyframes emoji-pop {
+  0%, 25% { transform: scale(1); }
+  55% { transform: scale(1.6); }
+  100% { transform: scale(1); }
+}
+
+/* End-of-tour: a clean, fully-opaque takeover so nothing behind bleeds into the finale. */
+.tour-done-backdrop { background: var(--bg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome-modal .tour-done-emoji { animation: none; }
+}
 
 /* Guided-tour coach-mark: anchored to the RIGHT of its target button, pointing back at it. */
 .tour-anchor { position: relative; display: inline-flex; }
@@ -125,26 +143,44 @@ a { color: var(--accent); }
   position: absolute; z-index: 40; left: calc(100% + 16px); top: 50%; transform: translateY(-50%);
   display: flex; align-items: flex-start; gap: 10px;
   width: 300px;
+  /* Arrow colors via variables so the flash keyframe can recolor the arrow in sync. */
+  --arrow-edge: var(--accent);
+  --arrow-fill: var(--tip-bg);
   /* Brighter than --panel-2 + an accent glow so the tip pops off the page. */
   background: var(--tip-bg); border: 1px solid var(--accent); border-radius: 12px;
   padding: 12px 14px;
   box-shadow: 0 0 0 1px rgba(79, 140, 255, 0.35), 0 14px 34px rgba(79, 140, 255, 0.32);
+  /* On appear: wait 500ms (+ the keyframe's brief hold), then a soft ease up to neon and back. */
+  animation: tip-flash 850ms ease-in-out 500ms;
+}
+/* Register the arrow color vars as <color> so they interpolate (fade) with the animation
+   instead of snapping — keeps the arrow in step with the border during the soft flash. */
+@property --arrow-edge { syntax: "<color>"; inherits: true; initial-value: #4f8cff; }
+@property --arrow-fill { syntax: "<color>"; inherits: true; initial-value: #2f4d88; }
+/* Soft flash: brief accent hold, ease up to neon-yellow at the midpoint, ease back down. */
+@keyframes tip-flash {
+  0%, 25% { border-color: var(--accent); --arrow-edge: var(--accent); --arrow-fill: var(--tip-bg); }
+  55% { border-color: #eaff00; --arrow-edge: #eaff00; --arrow-fill: #eaff00; }
+  100% { border-color: var(--accent); --arrow-edge: var(--accent); --arrow-fill: var(--tip-bg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .coach-tip { animation: none; }
 }
 /* Left-pointing arrow: accent border triangle with the fill triangle laid on top. */
 .coach-tip::before {
   content: ""; position: absolute; right: 100%; top: 50%; transform: translateY(-50%);
-  border: 9px solid transparent; border-right-color: var(--accent);
+  border: 9px solid transparent; border-right-color: var(--arrow-edge);
 }
 .coach-tip::after {
   content: ""; position: absolute; right: 100%; top: 50%; transform: translateY(-50%);
-  border: 8px solid transparent; border-right-color: var(--tip-bg); margin-right: -1px;
+  border: 8px solid transparent; border-right-color: var(--arrow-fill); margin-right: -1px;
 }
 /* Variant: tip sits to the LEFT of its anchor and points RIGHT — for the cramped modal. */
 .coach-tip-left { left: auto; right: calc(100% + 16px); width: 250px; }
-.coach-tip-left::before { right: auto; left: 100%; border-right-color: transparent; border-left-color: var(--accent); }
+.coach-tip-left::before { right: auto; left: 100%; border-right-color: transparent; border-left-color: var(--arrow-edge); }
 .coach-tip-left::after {
   right: auto; left: 100%; border-right-color: transparent;
-  border-left-color: var(--tip-bg); margin-right: 0; margin-left: -1px;
+  border-left-color: var(--arrow-fill); margin-right: 0; margin-left: -1px;
 }
 /* Variant: tip sits ABOVE its anchor and points DOWN — for buttons at the panel's left
    edge, where a left-placed tip would be clipped by the scrolling main column. */
@@ -153,11 +189,11 @@ a { color: var(--accent); }
 }
 .coach-tip-above::before {
   right: auto; left: 50%; top: 100%; transform: translateX(-50%);
-  border-right-color: transparent; border-top-color: var(--accent);
+  border-right-color: transparent; border-top-color: var(--arrow-edge);
 }
 .coach-tip-above::after {
   right: auto; left: 50%; top: 100%; transform: translateX(-50%);
-  border-right-color: transparent; border-top-color: var(--tip-bg); margin-right: 0; margin-top: -1px;
+  border-right-color: transparent; border-top-color: var(--arrow-fill); margin-right: 0; margin-top: -1px;
 }
 .toast-badge {
   flex: none; margin-top: 1px; padding: 2px 8px; border-radius: 999px;

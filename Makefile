@@ -195,3 +195,39 @@ stop: ## Stop the EC2 instance (save money when idle)
 status: ## Show the EC2 instance power state
 	aws ec2 describe-instances --instance-ids $(INSTANCE_ID) --region $(REGION) \
 		--query "Reservations[0].Instances[0].State.Name" --output text
+
+# --- k3s (Phase 1: single-namespace migration; Caddy stays the edge) --------
+# These do NOT run as part of `make deploy`. The compose stack stays the live system
+# until you deliberately cut over. First cutover:
+#   make k3s-install     # one time: install k3s (Traefik disabled so Caddy owns 80/443)
+#   make k8s-deploy      # sync code -> build+import images -> apply manifests
+# Roll back any time with `make backend` (compose) — nothing here removes it.
+K8S_IMAGES := api stats logstream
+KUBECTL    := sudo k3s kubectl
+SSHC        = ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new $(EC2_USER)@$(EC2_HOST)
+
+.PHONY: k3s-install k8s-sync k8s-images k8s-apply k8s-deploy k8s-status k8s-logs
+
+k3s-install: ## One-time: install k3s on the instance, Traefik disabled (Caddy is the edge)
+	$(SSHC) "curl -sfL https://get.k3s.io | sh -s - --disable traefik --write-kubeconfig-mode 644"
+
+k8s-sync: ## rsync the repo to the instance (same excludes as the compose backend deploy)
+	rsync -avz --delete $(RSYNC_EXCLUDES) -e "ssh -i $(SSH_KEY) -o StrictHostKeyChecking=accept-new" ./ $(EC2_USER)@$(EC2_HOST):$(REMOTE_DIR)/
+
+k8s-images: ## Build the app images on the instance and import them into k3s's containerd
+	# Single-quoted so the loop variable is expanded by the REMOTE shell, not locally.
+	$(SSHC) 'cd $(REMOTE_DIR) && for s in $(K8S_IMAGES); do docker build -t experimentation-$$s:latest $$s && docker save experimentation-$$s:latest | sudo k3s ctr images import -; done'
+
+k8s-apply: ## Apply the manifests (idempotent)
+	$(SSHC) "cd $(REMOTE_DIR) && $(KUBECTL) apply -f k8s/"
+
+k8s-deploy: k8s-sync k8s-images k8s-apply ## Full k3s deploy: sync -> build+import images -> apply -> restart app pods
+	# `:latest` + IfNotPresent means apply alone won't restart pods to pick up rebuilt images —
+	# roll the app Deployments so they pull in the freshly-imported images from containerd.
+	$(SSHC) "$(KUBECTL) -n experimentation rollout restart deploy/api deploy/stats deploy/logstream && $(KUBECTL) -n experimentation rollout status deploy/api --timeout=150s"
+
+k8s-status: ## Show the k3s workloads (pods, services, volumes)
+	$(SSHC) "$(KUBECTL) -n experimentation get pods,svc,pvc -o wide"
+
+k8s-logs: ## Tail the api + stats pods
+	$(SSHC) -t "$(KUBECTL) -n experimentation logs -l 'app in (api,stats)' -f --max-log-requests 6 --tail=100"

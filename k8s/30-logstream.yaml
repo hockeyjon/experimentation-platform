@@ -1,0 +1,93 @@
+# The log-stream service + its least-privilege access to the Kubernetes API.
+#
+# Under Docker this service mounted the Docker socket. Under k3s there is no Docker socket,
+# so it talks to the Kubernetes API instead — authenticated as THIS ServiceAccount, whose
+# Role can do nothing beyond read/manage pods in its own namespace:
+#   - get/list/watch pods        → discover the api/stats pods, list them for the health view
+#   - get pods/log               → stream their logs
+#   - delete pods                → /logstream/reset (the Deployments recreate them)
+# It cannot touch Secrets, other namespaces, or any workload it doesn't already stream.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: logstream
+  namespace: experimentation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: logstream-pod-reader
+  namespace: experimentation
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: logstream-pod-reader
+  namespace: experimentation
+subjects:
+  - kind: ServiceAccount
+    name: logstream
+    namespace: experimentation
+roleRef:
+  kind: Role
+  name: logstream-pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logstream
+  namespace: experimentation
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: logstream }
+  template:
+    metadata:
+      labels: { app: logstream }
+    spec:
+      serviceAccountName: logstream
+      containers:
+        - name: logstream
+          image: experimentation-logstream:latest
+          imagePullPolicy: IfNotPresent
+          # The image's default CMD runs server.js (the Docker edition, used by compose).
+          # Under k3s we run the Kubernetes edition instead — same image, different entrypoint.
+          command: ["node", "server.k8s.js"]
+          env:
+            # Not real secrets (the token ships in the public bundle) — redaction + the
+            # time/connection limits are the actual protection.
+            - name: LOGSTREAM_TOKEN
+              value: let-me-see-the-logs
+            - name: ALLOWED_ORIGIN
+              value: https://experimentation.gunbarrelstudio.com
+            - name: MAX_STREAM_SECONDS
+              value: "1200"
+            - name: RESET_COOLDOWN_SECONDS
+              value: "30"
+            - name: LOG_SERVICES
+              value: api,stats
+            # Its own namespace, so it never has to be told where it lives.
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logstream
+  namespace: experimentation
+spec:
+  selector: { app: logstream }
+  ports:
+    - port: 8080
+      targetPort: 8080

@@ -1,0 +1,37 @@
+# Namespace + shared config for the whole backend stack.
+#
+# Phase 1 of the k3s migration runs everything in ONE namespace (experimentation).
+# The per-session isolation (namespace-per-visitor) is a later phase — this just moves
+# the existing docker-compose stack onto Kubernetes, unchanged in behavior.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: experimentation
+---
+# Non-secret config, injected into api + stats via envFrom. Hosts are Kubernetes Service
+# names, resolved by in-cluster DNS within this namespace (mongo → the mongo Service).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: experimentation
+data:
+  MONGO_URL: mongodb://mongo:27017
+  MONGO_DB: experiments_events
+  REDIS_URL: redis://redis:6379
+  PORT: "4000"
+---
+# The one credential-bearing values. In a real cluster this would come from SSM / an
+# external secrets operator; here it's a plain Secret to demonstrate the pattern (the
+# demo password is not sensitive).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-secret
+  namespace: experimentation
+type: Opaque
+stringData:
+  POSTGRES_USER: experimentation
+  POSTGRES_PASSWORD: experimentation
+  POSTGRES_DB: experiments
+  DATABASE_URL: postgresql://experimentation:experimentation@postgres:5432/experiments?schema=public

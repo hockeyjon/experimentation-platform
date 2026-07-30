@@ -174,7 +174,7 @@ const API_READY = /GraphQL API ready/;
 const READY_TIMEOUT_S = 60;
 
 // How long the guided tour pauses before each auto-advance to the next step. Tune here.
-const TOUR_STEP_DELAY_MS = 750;
+const TOUR_STEP_DELAY_MS = 1000;
 
 // Ask the log-stream service to recreate api + stats before we attach — the `make
 // logs-reset` equivalent. Always resolves to a line for the log view: a failed or throttled
@@ -349,11 +349,12 @@ function WelcomeModal({ onSkip, onStartTour }: { onSkip: () => void; onStartTour
 function TourDoneModal({ onEnd }: { onEnd: () => void }) {
   const titleId = useId();
   return (
-    <div className="modal-backdrop">
+    <div className="modal-backdrop tour-done-backdrop">
       <div className="modal welcome-modal" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <img className="welcome-logo" src="/logo.png" alt="Experimentation Platform logo" />
         <h3 id={titleId}>You&apos;re all set</h3>
-        <p>Now you can watch the full data flow in the backend log stream. Happy experimenting 🎉</p>
+        <p>Now you can watch the full data flow in the backend log stream. Happy experimenting!</p>
+        <p className="tour-done-emoji">🎉</p>
         <div className="modal-actions welcome-actions">
           <button className="primary" autoFocus onClick={onEnd}>
             End tour
@@ -515,6 +516,20 @@ function BackendLogs({
     }
   }
 
+  // Reset every experiment back to DRAFT. A launched experiment's status lives in Postgres
+  // and survives the restart, which would otherwise leave the tour's Launch step with nothing
+  // to launch. Runs while the API is still up (before the recreate wipes the logs).
+  async function resetExperimentsToDraft(): Promise<string> {
+    const launched = experiments.filter((e) => e.status !== "DRAFT");
+    if (launched.length === 0) return "[logstream] all experiments already DRAFT";
+    try {
+      await Promise.all(launched.map((e) => dispatch(setStatus({ key: e.key, status: "DRAFT" })).unwrap()));
+      return `[logstream] reset ${launched.length} experiment(s) to DRAFT`;
+    } catch {
+      return "[logstream] reset experiment status failed — continuing";
+    }
+  }
+
   async function start(restart: boolean) {
     // https://api…/ → wss://api…/logstream
     const wsUrl = API_BASE.replace(/^http/, "ws") + "/logstream";
@@ -528,6 +543,7 @@ function BackendLogs({
       setResetting(true);
       setBusyLabel("Clearing enrolled customers…");
       notes.push(await clearAllBuckets());
+      notes.push(await resetExperimentsToDraft());
       setBusyLabel("Recreating api + stats…");
       notes.push(await resetBackend());
       // Backend enrollments are gone and the services are new, so drop the browser's copy

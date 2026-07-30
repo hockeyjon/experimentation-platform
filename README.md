@@ -3,25 +3,31 @@
 A working, full-stack A/B experimentation platform, a compact "mini LaunchDarkly/Optimizely"
 that runs locally and deploys to AWS. 
 
-## See the full stack live — two windows, side by side
+## See it live
 
-The app has two tabs: **Frontend** (the dashboard) and **Backend**, which streams the API's real
-logs over a WebSocket. The best way to see the whole stack work is to watch a single request travel
-through every layer in real time — so set it up as two browser windows next to each other:
+**https://experimentation.gunbarrelstudio.com**
 
-1. **Left window — Frontend.** Open the app: **https://experimentation.gunbarrelstudio.com**. It
-   loads on the **Frontend** tab. Leave it here.
-2. **Right window — Backend.** Open the same URL in a second window, drag it to the right half of
-   your screen, click the **Backend** tab, then **Stream backend logs** and confirm. You'll see
-   `connected — streaming api, stats …`.
-3. **Drive on the left, watch on the right.** Drive on the left, watch on the right. In the left (Frontend) window, assign a user to an experiment — or seed / clear a bucket — and the matching request appears in the backend log stream on the right. Then scroll down to the Control and Variant buckets, click "Record Success" on a few users, and watch the experiment's stats update live in the Variant table at the top of the panel.
+**Fastest path — take the tour.** When the app loads, a welcome dialog offers a guided tour that
+walks the whole flow on its own, with on-screen tips: start a fresh backend session, health-check the
+running services, enroll and convert users across variant buckets, then launch to production —
+ending on the live backend log stream. It's the quickest way to see every layer work.
 
-The (Backend) window prints the same request flowing through the stack: GraphQL resolver → Postgres (sticky assignment) → Redis (cache hit/miss) → MongoDB (event log).
+**Hands-on — two windows, side by side.** The app has two tabs: **Frontend** (the dashboard) and
+**Backend**, which streams the API's real logs over a WebSocket. To watch a single request travel the
+stack in real time:
 
-It's one deployed EC2 box serving both windows, so the logs are real, not simulated. Any confidential data in the logs is redacted server-side.
+1. **Left window — Frontend.** Open the app; it loads on the **Frontend** tab. Leave it here.
+2. **Right window — Backend.** Open the same URL in a second window, drag it to the right half of your
+   screen, click the **Backend** tab, then **Stream backend logs** and confirm.
+3. **Drive on the left, watch on the right.** Assign a user to an experiment (or seed / clear a
+   bucket), and the matching request appears in the backend log stream on the right — flowing through
+   the stack: GraphQL resolver → Postgres (sticky assignment) → Redis (cache hit/miss) → MongoDB
+   (event log). Then scroll to the Control and Variant buckets, click **Record success** on a few
+   users, and the experiment's stats update live in the results table.
 
-The stream auto-disconnects after 5
-minutes and runs one at a time (bounded server load, no auth step required).
+It's one EC2 box running the whole backend on **k3s** (lightweight Kubernetes) behind Caddy, so the
+logs are real, not simulated — with IDs and emails redacted server-side. The stream auto-disconnects
+after 20 minutes and runs one at a time (bounded server load, no auth step required).
 
 ## The stack
 
@@ -35,7 +41,8 @@ minutes and runs one at a time (bounded server load, no auth step required).
 | **Redis** (Docker) | Sticky-assignment cache | — |
 | **TypeScript / JavaScript** | Throughout | — |
 | **Python** (FastAPI) | Significance testing (microservice) | — |
-| **Docker** on EC2 | Container runtime for the deployed stack | EKS at larger scale |
+| **k3s** (Kubernetes) on EC2 | Orchestrates the deployed backend — a self-hosted stand-in for EKS | EKS |
+| **Docker Compose** | Local dev + the container images k3s runs | — |
 
 ## Architecture
 
@@ -107,8 +114,11 @@ api/                   # Node.js + TypeScript GraphQL API
   src/resolvers/       # where the three datastores come together
 web/                   # Next.js + React + Redux dashboard
   src/store/           # Redux Toolkit slice + typed hooks
-  src/app/             # App Router pages
+  src/app/             # App Router pages (incl. the guided tour)
 stats/                 # Python FastAPI significance service
+logstream/             # WebSocket backend-log-stream service (Docker + Kubernetes editions)
+k8s/                   # k3s manifests for the deployed backend (see k8s/README.md)
+deploy/                # docker-compose.prod.yml + Caddyfile
 ```
 
 ## How I'd productionize this
@@ -143,6 +153,9 @@ flagging system, so I'd dogfood it and gate its own rollout with it.)
 - **Data layer** → Postgres read replicas; a TTL + archival/partitioning strategy for the unbounded
   Mongo event log; Redis with failover and cache-stampede protection.
 - **API** → authN/Z, rate limiting, query depth/complexity limits, and DataLoader to kill N+1s.
-- **Ops** → CI/CD, secrets out of plaintext compose env (SSM / Secrets Manager), metrics + tracing +
-  alerting, and more than a single EC2 box. The `logstream` service mounts the Docker socket — fine
-  for an isolated demo, swapped for a real log pipeline in production.
+- **Ops** → CI/CD, secrets out of plaintext env (SSM / Secrets Manager), metrics + tracing +
+  alerting, and more than a single node. *Already done:* the backend runs on **k3s** (single-node
+  Kubernetes) as a self-hosted stand-in for EKS — the manifests in `k8s/` deploy to EKS essentially
+  unchanged — and the `logstream` service reads pod logs via the Kubernetes API with a
+  least-privilege ServiceAccount (no Docker socket). Next infra step: multiple nodes and a
+  namespace-per-session for true tenant isolation.
