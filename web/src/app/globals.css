@@ -6,7 +6,9 @@
   --text: #e6ecf7;
   --muted: #93a1bd;
   --accent: #4f8cff;
-  --tip-bg: #2f4d88; /* guided-tour coach-mark background — brighter than --panel-2 */
+  --tip-bg: #c2d4fb; /* guided-tour coach-mark: a light periwinkle — clearly tinted (not just
+                        off-white) so it ties into the accent, while staying light enough that the
+                        dark text + solid-blue pills inside keep high contrast */
   --good: #35c98b;
   --warn: #f5a623;
   --bad: #ff6b6b;
@@ -150,8 +152,9 @@ a { color: var(--accent); }
   100% { transform: scale(1); }
 }
 
-/* End-of-tour: a clean, fully-opaque takeover so nothing behind bleeds into the finale. */
-.tour-done-backdrop { background: var(--bg); }
+/* End-of-tour: a translucent backdrop so the live log stream stays visible (dimmed) behind the
+   finale modal — it's the "here's the data flow you just drove" payoff, so let it show through. */
+.tour-done-backdrop { background: rgba(3, 7, 18, 0.6); }
 
 @media (prefers-reduced-motion: reduce) {
   .welcome-modal .tour-done-emoji { animation: none; }
@@ -162,7 +165,7 @@ a { color: var(--accent); }
 .coach-tip {
   position: absolute; z-index: 40; left: calc(100% + 16px); top: 50%; transform: translateY(-50%);
   display: flex; align-items: flex-start; gap: 10px;
-  width: 300px;
+  width: 450px;
   /* Arrow colors via variables so the flash keyframe can recolor the arrow in sync. */
   --arrow-edge: var(--accent);
   --arrow-fill: var(--tip-bg);
@@ -196,7 +199,7 @@ a { color: var(--accent); }
   border: 8px solid transparent; border-right-color: var(--arrow-fill); margin-right: -1px;
 }
 /* Variant: tip sits to the LEFT of its anchor and points RIGHT — for the cramped modal. */
-.coach-tip-left { left: auto; right: calc(100% + 16px); width: 250px; }
+.coach-tip-left { left: auto; right: calc(100% + 16px); width: 375px; }
 .coach-tip-left::before { right: auto; left: 100%; border-right-color: transparent; border-left-color: var(--arrow-edge); }
 .coach-tip-left::after {
   right: auto; left: 100%; border-right-color: transparent;
@@ -215,17 +218,76 @@ a { color: var(--accent); }
   right: auto; left: 50%; top: 100%; transform: translateX(-50%);
   border-right-color: transparent; border-top-color: var(--arrow-fill); margin-right: 0; margin-top: -1px;
 }
+/* Spotlight: while a coach-tip is showing, its target button pulses a soft accent ring so the
+   eye lands on the thing to click. Pure CSS via :has() — the tip's presence drives it, so no
+   per-step markup. box-shadow (not outline) so the ring follows the button's rounded corners. */
+.tour-anchor:has(.coach-tip) > button {
+  animation: spotlight-pulse 1.6s ease-in-out infinite;
+}
+@keyframes spotlight-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(79, 140, 255, 0.55); }
+  50% { box-shadow: 0 0 0 7px rgba(79, 140, 255, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tour-anchor:has(.coach-tip) > button { animation: none; }
+}
+/* Variant: tip sits DIAGONALLY off the button's lower-right corner, with a diamond tail
+   pointing back up-left at that corner. Used where a right- or above-placed tip would read as
+   the same position as an earlier step (e.g. Health check vs Stream logs). */
+.coach-tip-corner {
+  left: calc(100% - 18px); right: auto;
+  top: calc(100% + 16px); bottom: auto;
+  transform: none;
+}
+/* Replace the base left/right triangles with a single 45°-rotated square (two borders) at the
+   tip's top-left, reading as a diagonal tail up toward the button corner. */
+.coach-tip-corner::before {
+  content: ""; right: auto; left: 16px; top: -6px; transform: rotate(45deg);
+  width: 12px; height: 12px; background: var(--arrow-fill);
+  border: none; border-top: 1px solid var(--arrow-edge); border-left: 1px solid var(--arrow-edge);
+}
+.coach-tip-corner::after { display: none; }
+/* Mirror of coach-tip-corner: tip sits DIAGONALLY off the button's lower-LEFT corner, with the
+   diamond tail pointing back up-right at that corner. */
+.coach-tip-corner-left {
+  right: calc(100% - 18px); left: auto;
+  top: calc(100% + 16px); bottom: auto;
+  transform: none;
+}
+.coach-tip-corner-left::before {
+  content: ""; left: auto; right: 16px; top: -6px; transform: rotate(45deg);
+  width: 12px; height: 12px; background: var(--arrow-fill);
+  border: none; border-top: 1px solid var(--arrow-edge); border-right: 1px solid var(--arrow-edge);
+}
+.coach-tip-corner-left::after { display: none; }
+/* Tip sits DIAGONALLY off the button's UPPER-RIGHT corner (up + right), diamond tail pointing
+   back down-left at that corner. */
+.coach-tip-corner-up-right {
+  left: calc(100% - 18px); right: auto;
+  bottom: calc(100% + 16px); top: auto;
+  transform: none;
+}
+.coach-tip-corner-up-right::before {
+  content: ""; right: auto; left: 16px; top: auto; bottom: -6px; transform: rotate(45deg);
+  width: 12px; height: 12px; background: var(--arrow-fill);
+  border: none; border-bottom: 1px solid var(--arrow-edge); border-left: 1px solid var(--arrow-edge);
+}
+.coach-tip-corner-up-right::after { display: none; }
+/* Solid-blue pill with white text — reads clearly on the white tip. */
 .toast-badge {
   flex: none; margin-top: 1px; padding: 2px 8px; border-radius: 999px;
   font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
-  color: var(--accent); border: 1px solid var(--accent);
+  color: #fff; background: var(--accent); border: 1px solid var(--accent);
+  white-space: nowrap; /* keep "Tour · 3/9" on one line */
 }
-.toast-body { font-size: 13.5px; line-height: 1.5; color: var(--text); }
+/* Dark body text on the white card; the button names it references pop in accent blue. */
+.toast-body { font-size: 13.5px; line-height: 1.5; color: #101a30; }
+.toast-body strong { color: var(--accent); }
 .toast-close {
-  flex: none; background: transparent; border: none; color: var(--muted);
+  flex: none; background: transparent; border: none; color: #64748b;
   font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px;
 }
-.toast-close:hover { color: var(--text); }
+.toast-close:hover { color: #0b1220; }
 
 /* Shown while api + stats restart, before the stream attaches. */
 .spinner {

@@ -73,7 +73,7 @@ export default function Dashboard() {
       const t = setTimeout(() => {
         setTab("backend");
         setTourStep(12);
-      }, TOUR_STEP_DELAY_MS);
+      }, TOUR_FINALE_DELAY_MS);
       return () => clearTimeout(t);
     }
   }, [tourStep, selected?.status]);
@@ -196,8 +196,13 @@ const LOGSTREAM_TOKEN = process.env.NEXT_PUBLIC_LOGSTREAM_TOKEN ?? "let-me-see-t
 const API_READY = /GraphQL API ready/;
 const READY_TIMEOUT_S = 60;
 
-// How long the guided tour pauses before each auto-advance to the next step. Tune here.
-const TOUR_STEP_DELAY_MS = 1000;
+// How long the guided tour pauses before an auto-advance — long enough to read what just
+// happened, short enough not to drag. The finale gets a longer beat so the "RUNNING" badge
+// lands before the completion modal takes over.
+const TOUR_STEP_DELAY_MS = 1200;
+const TOUR_FINALE_DELAY_MS = 1800;
+// How many interactive tips the visitor clicks through (drives the "N/9" progress counter).
+const TOUR_TIPS = 9;
 
 // Ask the log-stream service to recreate api + stats before we attach — the `make
 // logs-reset` equivalent. Always resolves to a line for the log view: a failed or throttled
@@ -394,6 +399,35 @@ function Modal(props: {
   );
 }
 
+// A guided-tour coach-mark: a progress badge ("Tour · N/9"), the tip copy, and a dismiss ×.
+// Drop it inside a `.tour-anchor` next to the button it points at; `placement` picks the side
+// it sits on (default: right of the anchor). One component for every step so the counter,
+// arrow, flash, and spotlight all stay consistent. Its mere presence makes the target button
+// pulse (see `.tour-anchor:has(.coach-tip)` in globals.css) — no per-step wiring needed.
+function CoachTip({
+  n,
+  placement,
+  onClose,
+  children,
+}: {
+  n: number;
+  placement?: "left" | "above" | "corner" | "corner-left" | "corner-up-right";
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className={placement ? `coach-tip coach-tip-${placement}` : "coach-tip"} role="status">
+      <span className="toast-badge">
+        Tour · {n}/{TOUR_TIPS}
+      </span>
+      <div className="toast-body">{children}</div>
+      <button className="toast-close" aria-label="Dismiss tour tip" onClick={onClose}>
+        ×
+      </button>
+    </div>
+  );
+}
+
 // First-load entry modal. The logo + title show immediately; the body is a spinner while we
 // check whether the single backend stream is free, then swaps to the welcome/tour or, if
 // another session already holds the stream, the "in use / Phase 2" message. Reused by the
@@ -552,19 +586,10 @@ function RestartDialog(props: {
               Restart
             </button>
             {props.tourActive && (
-              <div className="coach-tip coach-tip-left" role="status">
-                <span className="toast-badge">Tour</span>
-                <div className="toast-body">
-                  Click the <strong>Restart</strong> button.
-                </div>
-                <button
-                  className="toast-close"
-                  aria-label="Dismiss tour tip"
-                  onClick={props.onDismissTour}
-                >
-                  ×
-                </button>
-              </div>
+              <CoachTip n={2} placement="left" onClose={props.onDismissTour}>
+                Recreate the api + stats containers from scratch for a clean slate. Click{" "}
+                <strong>Restart</strong>.
+              </CoachTip>
             )}
           </span>
           <button className="primary" autoFocus onClick={props.onContinue}>
@@ -847,16 +872,10 @@ function BackendLogs({
               Stream backend logs
             </button>
             {tourStep === 1 && (
-              <div className="coach-tip" role="status">
-                <span className="toast-badge">Tour</span>
-                <div className="toast-body">
-                  First, let&apos;s start a fresh session on the backend. Click the{" "}
-                  <strong>Stream backend logs</strong> button.
-                </div>
-                <button className="toast-close" aria-label="Dismiss tour tip" onClick={() => setTourStep(0)}>
-                  ×
-                </button>
-              </div>
+              <CoachTip n={1} onClose={() => setTourStep(0)}>
+                Let&apos;s boot a fresh backend and watch it come up live. Click{" "}
+                <strong>Stream backend logs</strong>.
+              </CoachTip>
             )}
           </span>
         )}
@@ -880,14 +899,10 @@ function BackendLogs({
             <button className="primary" disabled={checking} onClick={healthCheck}>
               {checking ? "Checking…" : "Health check"}
             </button>
-            {tourStep === 4 && (
-              <div className="coach-tip" role="status">
-                <span className="toast-badge">Tour</span>
-                <div className="toast-body">Inspect the health of the backend microservices.</div>
-                <button className="toast-close" aria-label="Dismiss tour tip" onClick={() => setTourStep(0)}>
-                  ×
-                </button>
-              </div>
+            {tourStep === 4 && !checking && serviceLines.length === 0 && (
+              <CoachTip n={3} placement="corner" onClose={() => setTourStep(0)}>
+                See every microservice running on the box. Click <strong>Health check</strong>.
+              </CoachTip>
             )}
           </span>
           {checking && (
@@ -1103,19 +1118,9 @@ function ResultsCard(props: {
             🚀 Launch to production
           </button>
           {props.tourStep === 10 && (
-            <div className="coach-tip" role="status">
-              <span className="toast-badge">Tour</span>
-              <div className="toast-body">
-                Finally, launch the experiment to production and watch it go live.
-              </div>
-              <button
-                className="toast-close"
-                aria-label="Dismiss tour tip"
-                onClick={() => props.setTourStep(0)}
-              >
-                ×
-              </button>
-            </div>
+            <CoachTip n={9} onClose={() => props.setTourStep(0)}>
+              Ship it — <strong>Launch to production</strong> and watch the experiment go live.
+            </CoachTip>
           )}
         </span>
         <button
@@ -1216,19 +1221,10 @@ function AssignCard(props: {
             Create User
           </button>
           {props.tourStep === 5 && (
-            <div className="coach-tip" role="status">
-              <span className="toast-badge">Tour</span>
-              <div className="toast-body">
-                Now let&apos;s simulate real users enrolling — each one gets bucketed into a variant.
-              </div>
-              <button
-                className="toast-close"
-                aria-label="Dismiss tour tip"
-                onClick={() => props.setTourStep(0)}
-              >
-                ×
-              </button>
-            </div>
+            <CoachTip n={4} placement="corner-left" onClose={() => props.setTourStep(0)}>
+              <strong>Create a user</strong> — they&apos;re hashed into a variant bucket and stick
+              there on every future visit.
+            </CoachTip>
           )}
         </span>
       </div>
@@ -1311,17 +1307,9 @@ function UserBoard(props: {
             Seed 5 per variant
           </button>
           {props.tourStep === 6 && (
-            <div className="coach-tip" role="status">
-              <span className="toast-badge">Tour</span>
-              <div className="toast-body">Seed 5 more users into each bucket.</div>
-              <button
-                className="toast-close"
-                aria-label="Dismiss tour tip"
-                onClick={() => props.setTourStep(0)}
-              >
-                ×
-              </button>
-            </div>
+            <CoachTip n={5} placement="corner-up-right" onClose={() => props.setTourStep(0)}>
+              Fill both buckets fast — <strong>Seed 5 per variant</strong>.
+            </CoachTip>
           )}
         </span>
         <button
@@ -1348,15 +1336,19 @@ function UserBoard(props: {
                 // in bucket 2 (steps 8 and 9). The spotlighted button advances the tour on click.
                 let tipStep = 0;
                 let tipText = "";
+                // Bucket-1 (left column) tips point up-right so they clear the Experiments
+                // sidebar; the bucket-2 (right column) tips point left into the open gap.
+                let tipPlacement: "left" | "corner-up-right" = "left";
                 if (colIndex === 0 && rowIndex === 0) {
                   tipStep = 7;
-                  tipText = "Now let's simulate some successful events detected on customer surfaces.";
+                  tipText = "Log a conversion — a real success event from this customer.";
+                  tipPlacement = "corner-up-right";
                 } else if (colIndex === 1 && rowIndex === 0) {
                   tipStep = 8;
-                  tipText = "Simulate another success.";
+                  tipText = "Log one in the other variant so both have wins.";
                 } else if (colIndex === 1 && rowIndex === 1) {
                   tipStep = 9;
-                  tipText = "One more time.";
+                  tipText = "One more — enough signal to compare the variants.";
                 }
                 const showTip = tipStep !== 0 && props.tourStep === tipStep;
                 return (
@@ -1379,17 +1371,9 @@ function UserBoard(props: {
                         {u.converted ? "✓ Recorded" : "Record success"}
                       </button>
                       {showTip && (
-                        <div className="coach-tip coach-tip-left" role="status">
-                          <span className="toast-badge">Tour</span>
-                          <div className="toast-body">{tipText}</div>
-                          <button
-                            className="toast-close"
-                            aria-label="Dismiss tour tip"
-                            onClick={() => props.setTourStep(0)}
-                          >
-                            ×
-                          </button>
-                        </div>
+                        <CoachTip n={tipStep - 1} placement={tipPlacement} onClose={() => props.setTourStep(0)}>
+                          {tipText}
+                        </CoachTip>
                       )}
                     </span>
                   </div>
