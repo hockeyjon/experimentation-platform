@@ -73,6 +73,7 @@ spec:
             - { name: PROVISIONER_TOKEN, value: let-me-see-the-logs }
             - { name: ALLOWED_ORIGIN, value: "https://experimentation.gunbarrelstudio.com" }
             - { name: MAX_SESSIONS, value: "2" }
+            - { name: WARM_POOL, value: "2" } # pre-warmed stacks on standby (≤ MAX_SESSIONS)
             - { name: IDLE_TTL_SECONDS, value: "900" }
             - { name: MAX_LIFETIME_SECONDS, value: "3600" }
             - { name: STACK_PATH, value: "/config/session-stack.yaml" }

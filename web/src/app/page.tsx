@@ -6,6 +6,16 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useAppDispatch, useAppSelector, loadPersistedAssignments } from "@/store";
 import { useStatsStream } from "@/hooks/useStatsStream";
 import {
+  httpBase,
+  wsBase,
+  TOKEN,
+  createSession,
+  waitUntilReady,
+  heartbeat as sessionHeartbeat,
+  releaseSession,
+  setSessionId,
+} from "@/lib/session";
+import {
   assignUser,
   backendRestartStarted,
   clearBucket,
@@ -26,39 +36,58 @@ export default function Dashboard() {
     (s) => s.experiments,
   );
   const [tab, setTab] = useState<"frontend" | "backend">("frontend");
-  // First-load entry modal. Starts "checking" (logo + title + spinner shown immediately), then
-  // resolves to "welcome" (offer the tour) or "busy" (another session holds the single stream —
-  // don't lead a second visitor into a tour they can't finish). "done" once dismissed.
-  const [entryState, setEntryState] = useState<"checking" | "welcome" | "busy" | "done">("checking");
+  // First-load entry modal (Phase 2). Starts "provisioning" (logo + title + spinner while this
+  // visitor's own isolated stack spins up), then resolves to "welcome" (ready — offer the tour),
+  // "busy" (every session slot is taken — the provisioner's 429), or "error" (spin-up failed).
+  // "done" once dismissed.
+  const [entryState, setEntryState] = useState<
+    "provisioning" | "welcome" | "busy" | "error" | "done"
+  >("provisioning");
   // Guided tour progress. 0 = not running; each step drives a toast tip (+ any navigation).
   const [tourStep, setTourStep] = useState(0);
+  // Bumped to re-run the provisioning effect when the visitor retries after busy/error.
+  const [attempt, setAttempt] = useState(0);
 
-  // Load experiments + restore the persisted buckets on mount.
-  useEffect(() => {
-    dispatch(fetchExperiments());
-    dispatch(hydrateAssignments(loadPersistedAssignments()));
-  }, [dispatch]);
-
-  // On load, atomically claim the single session slot: if we get it, show the welcome/tour and
-  // hold the slot with a heartbeat until the tab closes; if another session already holds it,
-  // show the busy modal. The logo + title are visible under a spinner in the meantime.
+  // On load (and on each retry): ask the provisioner for our OWN isolated stack, wait for it to
+  // come up (~30–60s), then point the app at /s/<id>, load that stack's experiments, and
+  // heartbeat to hold the slot until the tab closes. A DELETE on unload frees the slot right
+  // away so the next visitor doesn't wait out the idle TTL (the reaper is the backstop).
   useEffect(() => {
     let cancelled = false;
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
-    claimSession().then((claimed) => {
-      if (cancelled) return;
-      setEntryState(claimed ? "welcome" : "busy");
-      if (claimed) heartbeat = setInterval(() => claimSession(), CLAIM_HEARTBEAT_MS);
-    });
-    const onHide = () => releaseSession();
+    let hb: ReturnType<typeof setInterval> | undefined;
+    let id: string | null = null;
+
+    setEntryState("provisioning");
+    (async () => {
+      try {
+        const created = await createSession();
+        if (cancelled) return;
+        if (created === "at-capacity") return void setEntryState("busy");
+        id = created.id;
+        await waitUntilReady(id);
+        if (cancelled) return;
+        // From here on, every backend caller resolves to THIS session's stack.
+        setSessionId(id);
+        dispatch(fetchExperiments());
+        dispatch(hydrateAssignments(loadPersistedAssignments()));
+        hb = setInterval(() => id && sessionHeartbeat(id), SESSION_HEARTBEAT_MS);
+        setEntryState("welcome");
+      } catch (e) {
+        if (!cancelled) setEntryState("error");
+        console.error("[session] provisioning failed", e);
+      }
+    })();
+
+    const onHide = () => id && releaseSession(id);
     window.addEventListener("pagehide", onHide);
     return () => {
       cancelled = true;
-      if (heartbeat) clearInterval(heartbeat);
+      if (hb) clearInterval(hb);
       window.removeEventListener("pagehide", onHide);
-      releaseSession();
+      if (id) releaseSession(id);
+      setSessionId(null);
     };
-  }, []);
+  }, [attempt, dispatch]);
 
   const selected = items.find((e) => e.key === selectedKey) ?? null;
 
@@ -84,6 +113,7 @@ export default function Dashboard() {
         <EntryModal
           state={entryState}
           onSkip={() => setEntryState("done")}
+          onRetry={() => setAttempt((a) => a + 1)}
           onStartTour={() => {
             setEntryState("done");
             setTab("backend"); // step 1: over to the Backend (log stream) tab
@@ -183,12 +213,12 @@ export default function Dashboard() {
   );
 }
 
-// The log-stream service sits behind the same host as the GraphQL API, under /logstream*.
-const API_BASE = (process.env.NEXT_PUBLIC_GRAPHQL_URL ?? "https://api.gunbarrelstudio.com/").replace(
-  /\/+$/,
-  "",
-);
-const LOGSTREAM_TOKEN = process.env.NEXT_PUBLIC_LOGSTREAM_TOKEN ?? "let-me-see-the-logs";
+// The log-stream service sits behind the same host as the GraphQL API, under /logstream* —
+// per session in Phase 2, so its address (and the GraphQL/SSE address) comes from lib/session.ts
+// at call time: httpBase() for REST/SSE, wsBase() for the socket, TOKEN for the bundle guard.
+
+// How often we refresh the session's idle-TTL lease. Well under the provisioner's 15-min TTL.
+const SESSION_HEARTBEAT_MS = 60_000;
 
 // A restart isn't done when the container starts — node still runs `prisma db push` and
 // boots. This is the line the api logs when it is actually serving; it must stay in sync
@@ -209,7 +239,7 @@ const TOUR_TIPS = 9;
 // reset is worth showing, but it never blocks the stream (seeing the logs is the point).
 async function resetBackend(): Promise<string> {
   try {
-    const res = await fetch(`${API_BASE}/logstream/reset?token=${encodeURIComponent(LOGSTREAM_TOKEN)}`, {
+    const res = await fetch(`${httpBase()}/logstream/reset?token=${encodeURIComponent(TOKEN)}`, {
       method: "POST",
     });
     if (res.ok) {
@@ -223,49 +253,6 @@ async function resetBackend(): Promise<string> {
     return `[logstream] reset failed (${res.status}) — streaming anyway`;
   } catch {
     return "[logstream] reset request failed — streaming anyway";
-  }
-}
-
-// --- Single-session claim ---------------------------------------------------------------
-// Only one session runs at a time. Rather than a race-prone status *check*, the app atomically
-// CLAIMS the slot the moment a visitor lands (see the Dashboard mount effect), holds it with a
-// heartbeat while the tab is open, and releases it on unload.
-
-// How often the holding tab re-claims to keep its lease alive (server lease is 20s).
-const CLAIM_HEARTBEAT_MS = 7000;
-
-// A per-tab session id — survives reload (sessionStorage), gone when the tab closes.
-function sessionId(): string {
-  if (typeof window === "undefined") return "";
-  let id = window.sessionStorage.getItem("exp-session-id");
-  if (!id) {
-    id = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    window.sessionStorage.setItem("exp-session-id", id);
-  }
-  return id;
-}
-
-const claimUrl = (path: "claim" | "release") =>
-  `${API_BASE}/logstream/${path}?token=${encodeURIComponent(LOGSTREAM_TOKEN)}&session=${encodeURIComponent(sessionId())}`;
-
-// Claim (or extend) the single session slot. Returns whether WE hold it. Fails open (true) on
-// error so a transient hiccup never wrongly blocks the primary user.
-async function claimSession(): Promise<boolean> {
-  try {
-    const res = await fetch(claimUrl("claim"), { method: "POST" });
-    if (!res.ok) return true;
-    const { claimed } = await res.json();
-    return !!claimed;
-  } catch {
-    return true;
-  }
-}
-
-function releaseSession(): void {
-  try {
-    navigator.sendBeacon(claimUrl("release"));
-  } catch {
-    /* ignore */
   }
 }
 
@@ -284,7 +271,7 @@ async function fetchContainers(): Promise<string[]> {
   const stamp = new Date().toTimeString().slice(0, 8);
   try {
     const res = await fetch(
-      `${API_BASE}/logstream/containers?token=${encodeURIComponent(LOGSTREAM_TOKEN)}`,
+      `${httpBase()}/logstream/containers?token=${encodeURIComponent(TOKEN)}`,
     );
     if (!res.ok) return [`${stamp} [health] request failed (${res.status})`];
     const { containers } = (await res.json()) as { containers: ContainerRow[] };
@@ -428,41 +415,26 @@ function CoachTip({
   );
 }
 
-// First-load entry modal. The logo + title show immediately; the body is a spinner while we
-// check whether the single backend stream is free, then swaps to the welcome/tour or, if
-// another session already holds the stream, the "in use / Phase 2" message. Reused by the
-// Backend tab (state="busy") when a stream-start is attempted while busy.
+// First-load entry modal (Phase 2). The logo + title show immediately; the body is a spinner
+// while this visitor's OWN isolated stack spins up, then swaps to the welcome/tour when it's
+// ready — or, if every session slot is taken, the "at capacity" message, or an error with a
+// retry if the spin-up failed. Always a hard block: until a session is ready there's nothing
+// behind it to use.
 function EntryModal({
   state,
   onSkip,
   onStartTour,
-  onDismiss,
-  dismissible = false,
+  onRetry,
 }: {
-  state: "checking" | "welcome" | "busy";
+  state: "provisioning" | "welcome" | "busy" | "error";
   onSkip?: () => void;
   onStartTour?: () => void;
-  onDismiss?: () => void;
-  dismissible?: boolean;
+  onRetry?: () => void;
 }) {
   const titleId = useId();
-  // Backdrop / Escape dismissal only when explicitly allowed AND in the busy state. Welcome is
-  // button-only and checking can't be dismissed — matching the take-tour dialog. The on-load
-  // busy modal is a hard block (dismissible=false); the Backend-tab one opts in so a user who
-  // just lost the stream race isn't locked out of the app they were already using.
-  const canDismiss = dismissible && state === "busy";
-
-  useEffect(() => {
-    if (!canDismiss) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onDismiss?.();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [canDismiss, onDismiss]);
 
   return (
-    <div className="modal-backdrop" onClick={canDismiss ? onDismiss : undefined}>
+    <div className="modal-backdrop">
       <div
         className="modal welcome-modal"
         role="dialog"
@@ -473,9 +445,13 @@ function EntryModal({
         <img className="welcome-logo" src="/logo.png" alt="Experimentation Platform logo" />
         <h3 id={titleId}>Welcome to the Experimentation Platform</h3>
 
-        {state === "checking" && (
+        {state === "provisioning" && (
           <div className="entry-loading" role="status" aria-live="polite">
             <span className="spinner spinner-lg" aria-hidden="true" />
+            <p className="muted">
+              Spinning up your own isolated stack — usually 30–60 seconds. Each visitor gets a
+              private, namespace-isolated backend on Kubernetes.
+            </p>
           </div>
         )}
 
@@ -497,9 +473,29 @@ function EntryModal({
         {state === "busy" && (
           <>
             <p>
-              The backend is currently in use by another session. Running more than one session at a
-              time isn&apos;t implemented yet — that&apos;s Phase 2. See the Phase 2 description below.
+              Every isolated session is currently in use. Each visitor gets their own private
+              namespace-isolated stack, and they&apos;re all taken right now — try again in a minute.
             </p>
+            <div className="modal-actions welcome-actions">
+              <button className="primary" autoFocus onClick={onRetry}>
+                Try again
+              </button>
+            </div>
+            <PhasePanels />
+          </>
+        )}
+
+        {state === "error" && (
+          <>
+            <p>
+              Something went wrong spinning up your isolated stack. This is a demo running on a
+              single small box, so a slot may have just been reclaimed — give it another try.
+            </p>
+            <div className="modal-actions welcome-actions">
+              <button className="primary" autoFocus onClick={onRetry}>
+                Try again
+              </button>
+            </div>
             <PhasePanels />
           </>
         )}
@@ -508,7 +504,7 @@ function EntryModal({
   );
 }
 
-// The Phase 1 / Phase 2 panels, shared by the welcome modal and the stream-busy modal.
+// The Phase 1 / Phase 2 panels, shared by the welcome and at-capacity modals.
 function PhasePanels() {
   return (
     <div className="phase-cards">
@@ -534,13 +530,21 @@ function PhasePanels() {
           <code>CloudFront</code>
         </div>
       </section>
-      <section className="phase-card soon">
+      <section className="phase-card done">
         <h4>Phase 2</h4>
-        <div className="phase-status">⚙ Coming soon</div>
+        <div className="phase-status">✓ Live — you&apos;re using it now</div>
         <p>
-          Moving to <strong>per-session isolation</strong>: each visitor will get their own private,
-          namespace-isolated stack on Kubernetes — a self-hosted stand-in for EKS.
+          <strong>Per-session isolation</strong>: the stack you&apos;re looking at is your own
+          private, namespace-isolated backend on Kubernetes — provisioned on demand and torn down
+          when you leave. A self-hosted stand-in for EKS multi-tenancy.
         </p>
+        <div className="phase-stack">
+          <code>Namespace per session</code>
+          <code>ResourceQuota</code>
+          <code>NetworkPolicy</code>
+          <code>Provisioner API</code>
+          <code>k3s</code>
+        </div>
       </section>
     </div>
   );
@@ -632,7 +636,6 @@ function BackendLogs({
   const [stopped, setStopped] = useState(false); // true after Stop: log cleared, showing the prompt
   const [resetting, setResetting] = useState(false);
   const [choosing, setChoosing] = useState(false);
-  const [streamBusy, setStreamBusy] = useState(false);
   const [subTab, setSubTab] = useState<"logging" | "services">("logging");
   const [checking, setChecking] = useState(false);
   const [serviceLines, setServiceLines] = useState<string[]>([]);
@@ -747,8 +750,8 @@ function BackendLogs({
   }
 
   async function start(restart: boolean) {
-    // https://api…/ → wss://api…/logstream
-    const wsUrl = API_BASE.replace(/^http/, "ws") + "/logstream";
+    // wss://api…[/s/<id>]/logstream — this session's own log stream (see lib/session.ts).
+    const wsUrl = wsBase() + "/logstream";
 
     setStopped(false); // leaving the stopped state — a stream is (re)starting
     const notes: string[] = [];
@@ -779,7 +782,7 @@ function BackendLogs({
       notes.push("[logstream] continuing from the current state — nothing restarted");
     }
 
-    const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(LOGSTREAM_TOKEN)}`);
+    const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(TOKEN)}`);
     wsRef.current = ws;
     setLines(notes);
     setStreaming(true);
@@ -861,15 +864,10 @@ function BackendLogs({
           <span className="tour-anchor">
             <button
               className="primary"
-              onClick={async () => {
-                // Backstop: we normally already hold the session claim (taken on load), but
-                // re-claim to be sure. If we've somehow lost it, don't start the disruptive
-                // restart flow — show the "in use" modal instead.
-                if (!(await claimSession())) {
-                  setStreamBusy(true);
-                  return;
-                }
-                setChoosing(true); // straight to the restart choice (no intermediate dialog)
+              onClick={() => {
+                // This visitor owns their isolated session, so there's no "in use by another"
+                // race here — go straight to the restart choice.
+                setChoosing(true);
                 if (tourStep === 1) setTourStep(2); // advance the tour to the Restart tip
               }}
             >
@@ -946,7 +944,6 @@ function BackendLogs({
           }}
         />
       )}
-      {streamBusy && <EntryModal state="busy" dismissible onDismiss={() => setStreamBusy(false)} />}
     </div>
   );
 }

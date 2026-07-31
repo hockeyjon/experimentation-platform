@@ -11,12 +11,8 @@
 // service has no route of its own.
 import { useEffect } from "react";
 import { useAppDispatch } from "@/store";
+import { httpBase } from "@/lib/session";
 import { significancePushed, statsStreamClosed, Significance } from "@/store/experimentsSlice";
-
-const API_BASE = (process.env.NEXT_PUBLIC_GRAPHQL_URL ?? "http://localhost:4000/").replace(
-  /\/+$/,
-  "",
-);
 
 const RETRY_BASE_MS = 1000;
 const RETRY_MAX_MS = 10000;
@@ -34,7 +30,7 @@ export function useStatsStream(experimentKey: string | null) {
 
     const connect = () => {
       if (cancelled) return;
-      es = new EventSource(`${API_BASE}/stats/stream/${encodeURIComponent(experimentKey)}`);
+      es = new EventSource(`${httpBase()}/stats/stream/${encodeURIComponent(experimentKey)}`);
 
       es.onopen = () => {
         attempt = 0; // healthy again — reset the backoff

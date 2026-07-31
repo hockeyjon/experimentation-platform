@@ -3,7 +3,11 @@
 //
 // It also logs every operation to the browser console so you can watch the frontend
 // flow: `[gql] → op` (request) and `[gql] ← op` (response) with timing, or `✗` on error.
-const ENDPOINT = process.env.NEXT_PUBLIC_GRAPHQL_URL ?? "http://localhost:4000/";
+//
+// The endpoint is resolved per-call from the active session (Phase 2): `<origin>/s/<id>/`,
+// which Caddy strips back to `/` for that session's own api. Before a session exists it's the
+// shared origin. See lib/session.ts.
+import { httpBase } from "./session";
 
 // Pull the first top-level field name out of the query for a readable label,
 // e.g. "assignUser" or "experiments". Falls back to a generic label.
@@ -19,7 +23,7 @@ export async function gql<T>(query: string, variables?: Record<string, unknown>)
 
   let res: Response;
   try {
-    res = await fetch(ENDPOINT, {
+    res = await fetch(`${httpBase()}/`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ query, variables }),

@@ -19,10 +19,17 @@ const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.PORT ?? 8090);
 const TOKEN = process.env.PROVISIONER_TOKEN ?? "let-me-see-the-logs";
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? "https://experimentation.gunbarrelstudio.com";
-const MAX_SESSIONS = Number(process.env.MAX_SESSIONS ?? 2); // fits a t3.medium
+const MAX_SESSIONS = Number(process.env.MAX_SESSIONS ?? 2); // hard cap on total live stacks
+// Ready-but-unclaimed stacks kept on standby so a visitor lands instantly instead of waiting
+// out a 30–60s cold boot. Bounded by MAX_SESSIONS − claimed. A full stack takes ~30s to boot,
+// so the pool is refilled ONE AT A TIME in the background — two cold boots at once starve the
+// box's 2 vCPUs and the second misses its rollout deadline (the bug that made concurrent
+// on-demand provisioning flaky).
+const WARM_POOL = Number(process.env.WARM_POOL ?? 2);
 const IDLE_TTL_S = Number(process.env.IDLE_TTL_SECONDS ?? 900); // 15 min since last heartbeat
 const MAX_LIFETIME_S = Number(process.env.MAX_LIFETIME_SECONDS ?? 3600); // 1 h hard cap
 const REAP_INTERVAL_MS = Number(process.env.REAP_INTERVAL_MS ?? 60000);
+const POOL_INTERVAL_MS = Number(process.env.POOL_INTERVAL_MS ?? 10000); // pool top-up cadence
 const STACK = process.env.STACK_PATH ?? "/app/session-stack.yaml";
 
 const LABEL = "app=session-stack";
@@ -47,6 +54,8 @@ async function listSessions() {
       status: a["provisioner/status"] ?? "unknown",
       created: Number(a["provisioner/created"] ?? 0),
       lastSeen: Number(a["provisioner/last-seen"] ?? 0),
+      // Epoch ms a visitor claimed this stack, or 0 while it's a warm pool member.
+      claimed: Number(a["provisioner/claimed"] ?? 0),
       phase: ns.status?.phase, // "Active" | "Terminating"
     };
   });
@@ -54,6 +63,8 @@ async function listSessions() {
 
 // Only sessions that still count against the cap (not mid-teardown).
 const liveSessions = (all) => all.filter((s) => s.phase !== "Terminating");
+const isClaimed = (s) => s.claimed > 0;
+const isWarm = (s) => !isClaimed(s) && s.status === "ready"; // ready + waiting for a visitor
 
 async function annotate(id, kv) {
   const pairs = Object.entries(kv).map(([k, v]) => `${k}=${v}`);
@@ -65,13 +76,9 @@ function newId() {
   return Math.random().toString(36).slice(2, 8);
 }
 
-async function createSession() {
-  const all = await listSessions();
-  if (liveSessions(all).length >= MAX_SESSIONS) {
-    const err = new Error("at capacity");
-    err.code = "CAPACITY";
-    throw err;
-  }
+// Spin up a fresh namespace + stack in the background. `claimed` marks it as a visitor's from
+// the start (on-demand) vs a warm pool member (claimed later, when handed out).
+async function createStack({ claimed }) {
   const id = newId();
   const ns = nsName(id);
   await kubectl(["create", "namespace", ns]);
@@ -80,15 +87,59 @@ async function createSession() {
     "provisioner/status": "provisioning",
     "provisioner/created": now(),
     "provisioner/last-seen": now(),
+    ...(claimed ? { "provisioner/claimed": now() } : {}),
   });
-
-  // Do the slow part (apply → wait → seed) in the background; the caller polls GET /sessions/:id.
+  // The slow part (apply → wait → seed) runs in the background; the caller polls GET /sessions/:id.
   provision(id, ns).catch(async (e) => {
     console.error(`[provisioner] ${ns} failed: ${e.message}`);
     await annotate(id, { "provisioner/status": "failed" });
   });
+  return id;
+}
 
+// POST /sessions — hand a visitor a stack. Prefer a warm one (instant); else a still-provisioning
+// pool member (they poll it to ready); else, if a slot is free, provision one on demand; else 429.
+async function claimSession() {
+  const all = liveSessions(await listSessions());
+  if (all.filter(isClaimed).length >= MAX_SESSIONS) {
+    const err = new Error("at capacity");
+    err.code = "CAPACITY";
+    throw err;
+  }
+  // A warm stack is best (ready now); a provisioning-but-unclaimed pool member is next best.
+  const target =
+    all.find(isWarm) ?? all.find((s) => !isClaimed(s) && s.status === "provisioning");
+  if (target) {
+    // Claiming resets the lifetime clock so a stack that sat warm isn't reaped early once used.
+    await annotate(target.id, {
+      "provisioner/claimed": now(),
+      "provisioner/created": now(),
+      "provisioner/last-seen": now(),
+    });
+    console.log(`[provisioner] claimed ${nsName(target.id)} (was ${target.status})`);
+    return { id: target.id, path: `/s/${target.id}`, status: target.status };
+  }
+  // Nothing pooled but a slot is free (cold start / pool not filled yet): provision on demand.
+  const id = await createStack({ claimed: true });
+  console.log(`[provisioner] provisioning ${nsName(id)} on demand (pool empty)`);
   return { id, path: `/s/${id}`, status: "provisioning" };
+}
+
+// Background: keep WARM_POOL ready stacks on standby, capped so warm + claimed ≤ MAX_SESSIONS.
+// Refills ONE AT A TIME (skips if anything is already provisioning) so we never cold-boot two
+// stacks at once — concurrent boots starve the box and time out.
+async function maintainPool() {
+  const all = liveSessions(await listSessions());
+  const claimed = all.filter(isClaimed).length;
+  const warm = all.filter(isWarm).length;
+  const provisioning = all.filter((s) => s.status === "provisioning").length;
+  const desiredWarm = Math.min(WARM_POOL, MAX_SESSIONS - claimed);
+  if (provisioning === 0 && warm < desiredWarm && all.length < MAX_SESSIONS) {
+    console.log(`[provisioner] pool: warm ${warm}/${desiredWarm} (claimed ${claimed}) — warming one`);
+    await createStack({ claimed: false }).catch((e) =>
+      console.error(`[provisioner] warm-up failed: ${e.message}`),
+    );
+  }
 }
 
 async function provision(id, ns) {
@@ -111,12 +162,19 @@ async function deleteSession(id) {
 async function reap() {
   const all = await listSessions().catch(() => []);
   for (const s of liveSessions(all)) {
+    // Failed provisions never come up but hold a slot — always reap them.
+    if (s.status === "failed") {
+      console.log(`[provisioner] reaping ${nsName(s.id)} (failed)`);
+      await deleteSession(s.id);
+      continue;
+    }
+    // Warm pool members have no heartbeat and are meant to sit until claimed — never idle them out.
+    if (!isClaimed(s)) continue;
     const idleFor = (now() - s.lastSeen) / 1000;
-    const ageFor = (now() - s.created) / 1000;
-    // Reap failed provisions (they hold a slot but will never come up), plus idle/expired ones.
-    if (s.status === "failed" || idleFor > IDLE_TTL_S || ageFor > MAX_LIFETIME_S) {
+    const ageFor = (now() - s.created) / 1000; // reset to claim time in claimSession
+    if (idleFor > IDLE_TTL_S || ageFor > MAX_LIFETIME_S) {
       console.log(
-        `[provisioner] reaping ${nsName(s.id)} (${s.status}, idle ${idleFor | 0}s, age ${ageFor | 0}s)`,
+        `[provisioner] reaping ${nsName(s.id)} (claimed, idle ${idleFor | 0}s, age ${ageFor | 0}s)`,
       );
       await deleteSession(s.id);
     }
@@ -159,20 +217,29 @@ const server = http.createServer(async (req, res) => {
   try {
     if (p === "/healthz") return void res.writeHead(200).end("ok");
 
-    // GET /sessions/capacity → { active, max, available }
+    // GET /sessions/capacity → { active, max, available, warm } (active = claimed by a visitor)
     if (p === "/sessions/capacity") {
       const json = gate(req, res, url, "GET");
       if (!json) return;
-      const active = liveSessions(await listSessions()).length;
-      return send(res, json, 200, { active, max: MAX_SESSIONS, available: Math.max(0, MAX_SESSIONS - active) });
+      const all = liveSessions(await listSessions());
+      const active = all.filter(isClaimed).length;
+      const warm = all.filter(isWarm).length;
+      return send(res, json, 200, {
+        active,
+        max: MAX_SESSIONS,
+        available: Math.max(0, MAX_SESSIONS - active),
+        warm,
+      });
     }
 
-    // POST /sessions → create one (or 429 at capacity)
+    // POST /sessions → claim a stack (warm = instant) or 429 if every slot is a live visitor
     if (p === "/sessions" && req.method === "POST") {
       const json = gate(req, res, url, "POST");
       if (!json) return;
       try {
-        return send(res, json, 202, await createSession());
+        const s = await claimSession();
+        maintainPool().catch(() => {}); // top the pool back up right away, don't block the response
+        return send(res, json, 202, s);
       } catch (e) {
         if (e.code === "CAPACITY") return send(res, json, 429, { error: "at capacity", retryAfter: 30 });
         throw e;
@@ -211,6 +278,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 setInterval(() => reap().catch((e) => console.error(`[provisioner] reap: ${e.message}`)), REAP_INTERVAL_MS);
+setInterval(() => maintainPool().catch((e) => console.error(`[provisioner] pool: ${e.message}`)), POOL_INTERVAL_MS);
 server.listen(PORT, () =>
-  console.log(`[provisioner] listening on :${PORT} — cap ${MAX_SESSIONS}, idle TTL ${IDLE_TTL_S}s`),
+  console.log(
+    `[provisioner] listening on :${PORT} — cap ${MAX_SESSIONS}, warm pool ${WARM_POOL}, idle TTL ${IDLE_TTL_S}s`,
+  ),
 );
