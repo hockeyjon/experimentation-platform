@@ -629,6 +629,7 @@ function BackendLogs({
   const dispatch = useAppDispatch();
   const experiments = useAppSelector((s) => s.experiments.items);
   const [streaming, setStreaming] = useState(false);
+  const [stopped, setStopped] = useState(false); // true after Stop: log cleared, showing the prompt
   const [resetting, setResetting] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const [streamBusy, setStreamBusy] = useState(false);
@@ -658,6 +659,8 @@ function BackendLogs({
     tickRef.current = null;
     clearBusy(); // never leave a spinner behind if the stream dies mid-boot
     setStreaming(false);
+    setLines([]); // erase the log; the view shows the restart/continue prompt instead
+    setStopped(true);
   };
 
   // Only tear the stream down on real unmount (leaving the page) — NOT on tab switch,
@@ -747,6 +750,7 @@ function BackendLogs({
     // https://api…/ → wss://api…/logstream
     const wsUrl = API_BASE.replace(/^http/, "ws") + "/logstream";
 
+    setStopped(false); // leaving the stopped state — a stream is (re)starting
     const notes: string[] = [];
     if (restart) {
       // Buckets first, while the API is still up — recreating the containers afterwards
@@ -889,7 +893,9 @@ function BackendLogs({
             ? lines.map((line, i) => <AnsiLine key={i} text={colorizeTags(line)} />)
             : resetting
               ? busyLabel
-              : 'Click "Stream backend logs" to begin.'}
+              : stopped
+                ? 'Click "Stream backend logs" to restart or continue logging.'
+                : 'Click "Stream backend logs" to begin.'}
         </pre>
       </div>
 
@@ -1109,7 +1115,10 @@ function ResultsCard(props: {
         <span className="tour-anchor">
           <button
             className="primary"
-            disabled={running}
+            // No exposures in either variant → nothing to launch. Guard against shipping an
+            // experiment with no enrolled users.
+            disabled={running || users.length === 0}
+            title={users.length === 0 ? "Enroll at least one user before launching" : undefined}
             onClick={() => {
               dispatch(setStatus({ key: experiment.key, status: "RUNNING" }));
               if (props.tourStep === 10) props.setTourStep(11); // tour: on to the finale
