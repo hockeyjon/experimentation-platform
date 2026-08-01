@@ -72,9 +72,10 @@ spec:
           env:
             - { name: PROVISIONER_TOKEN, value: let-me-see-the-logs }
             - { name: ALLOWED_ORIGIN, value: "https://experimentation.gunbarrelstudio.com" }
-            - { name: MAX_SESSIONS, value: "2" }
-            - { name: WARM_POOL, value: "2" } # pre-warmed stacks on standby (≤ MAX_SESSIONS)
-            - { name: IDLE_TTL_SECONDS, value: "900" }
+            - { name: MAX_SESSIONS, value: "3" } # total stacks (2 active + 1 warm reserve)
+            - { name: MAX_ACTIVE, value: "2" } # cap on concurrent ACTIVE users (bounds restart load)
+            - { name: WARM_POOL, value: "2" } # pre-warmed stacks on standby (≤ MAX_SESSIONS − claimed)
+            - { name: IDLE_TTL_SECONDS, value: "180" } # 3× the 60s heartbeat — frees a dead/closed tab's slot fast
             - { name: MAX_LIFETIME_SECONDS, value: "3600" }
             - { name: STACK_PATH, value: "/config/session-stack.yaml" }
           ports: [{ containerPort: 8090 }]

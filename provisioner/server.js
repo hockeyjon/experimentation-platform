@@ -19,7 +19,12 @@ const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.PORT ?? 8090);
 const TOKEN = process.env.PROVISIONER_TOKEN ?? "let-me-see-the-logs";
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN ?? "https://experimentation.gunbarrelstudio.com";
-const MAX_SESSIONS = Number(process.env.MAX_SESSIONS ?? 2); // hard cap on total live stacks
+const MAX_SESSIONS = Number(process.env.MAX_SESSIONS ?? 3); // hard cap on TOTAL live stacks (active + warm)
+// Cap on CLAIMED (active) sessions — the number of real visitors driving a tour at once. Kept
+// BELOW MAX_SESSIONS on purpose: the spare slot holds a warm reserve, not another active user.
+// This bounds concurrent load — N active users can each fire a disruptive backend "restart", and
+// more than 2 of those at once on the box's 2 vCPUs overwhelms it ("failed to fetch" mid-tour).
+const MAX_ACTIVE = Number(process.env.MAX_ACTIVE ?? 2);
 // Ready-but-unclaimed stacks kept on standby so a visitor lands instantly instead of waiting
 // out a 30–60s cold boot. Bounded by MAX_SESSIONS − claimed. A full stack takes ~30s to boot,
 // so the pool is refilled ONE AT A TIME in the background — two cold boots at once starve the
@@ -101,7 +106,8 @@ async function createStack({ claimed }) {
 // pool member (they poll it to ready); else, if a slot is free, provision one on demand; else 429.
 async function claimSession() {
   const all = liveSessions(await listSessions());
-  if (all.filter(isClaimed).length >= MAX_SESSIONS) {
+  // Cap ACTIVE users at MAX_ACTIVE (below MAX_SESSIONS — the spare slot is the warm reserve).
+  if (all.filter(isClaimed).length >= MAX_ACTIVE) {
     const err = new Error("at capacity");
     err.code = "CAPACITY";
     throw err;
@@ -142,10 +148,55 @@ async function maintainPool() {
   }
 }
 
+// --- FIFO waiting queue -----------------------------------------------------------------
+// When every ACTIVE slot is taken, waiting visitors hold a ticket and poll. Only the ticket at
+// the FRONT of the line may claim a freed slot, so service is first-come-first-served. A ticket
+// that stops polling (closed tab) ages out, advancing the line. In-memory: a provisioner restart
+// drops the queue and waiters simply re-enqueue on their next poll — fine for a demo.
+const QUEUE_TTL_MS = Number(process.env.QUEUE_TTL_MS ?? 15000);
+let queue = []; // [{ ticket, lastSeen }], oldest first
+
+const newTicket = () => Math.random().toString(36).slice(2, 10);
+
+function pruneQueue() {
+  const cutoff = now() - QUEUE_TTL_MS;
+  queue = queue.filter((q) => q.lastSeen >= cutoff);
+}
+
+// Refresh a ticket's lease (enrolling it if new/expired) and return its 0-based position in line.
+function touchTicket(ticket) {
+  pruneQueue();
+  let q = queue.find((x) => x.ticket === ticket);
+  if (!q) {
+    q = { ticket, lastSeen: now() };
+    queue.push(q);
+  } else {
+    q.lastSeen = now();
+  }
+  return queue.indexOf(q);
+}
+
+// Serialize the read-active → decide → claim critical section. Two polls arriving together must
+// not both see the same free slot and both grant (overshooting MAX_ACTIVE) — the check and the
+// claim aren't atomic across their awaits. The provisioner is single-replica, so an in-process
+// promise-chain lock is enough: each claim decision runs only after the previous one has committed.
+let claimLock = Promise.resolve();
+function withClaimLock(fn) {
+  const run = claimLock.then(fn, fn);
+  claimLock = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
 async function provision(id, ns) {
   console.log(`[provisioner] provisioning ${ns}`);
   await kubectl(["apply", "-n", ns, "-f", STACK]);
-  await kubectl(["-n", ns, "rollout", "status", "deploy/api", "--timeout=150s"]);
+  // Generous timeout: when several stacks boot at once (pool warm-up + active users' tour
+  // "restart" recreating their api), a boot can be CPU-starved on the 2-vCPU box and take a
+  // while. Better to let a contended boot finish than fail it (the frontend also retries).
+  await kubectl(["-n", ns, "rollout", "status", "deploy/api", "--timeout=200s"]);
   // Seed sample experiments so the session opens on a populated demo.
   await kubectl(["-n", ns, "exec", "deploy/api", "--", "npm", "run", "seed"]).catch((e) =>
     console.error(`[provisioner] seed failed for ${ns}: ${e.message}`),
@@ -224,24 +275,50 @@ const server = http.createServer(async (req, res) => {
       const all = liveSessions(await listSessions());
       const active = all.filter(isClaimed).length;
       const warm = all.filter(isWarm).length;
+      // max/available are the ACTIVE-user cap (what a visitor can claim); warm is the reserve.
+      pruneQueue();
       return send(res, json, 200, {
         active,
-        max: MAX_SESSIONS,
-        available: Math.max(0, MAX_SESSIONS - active),
+        max: MAX_ACTIVE,
+        available: Math.max(0, MAX_ACTIVE - active),
         warm,
+        waiting: queue.length,
       });
     }
 
-    // POST /sessions → claim a stack (warm = instant) or 429 if every slot is a live visitor
+    // POST /sessions → claim a stack, or take a place in the FIFO line.
+    // First call (no ticket): served instantly if a slot is free AND nobody's waiting; otherwise
+    // returns a ticket + position. Subsequent calls pass ?ticket=<t> to hold their place; only the
+    // FRONT ticket claims a freed slot. Response is either a session (202) or {queued,...} (200).
     if (p === "/sessions" && req.method === "POST") {
       const json = gate(req, res, url, "POST");
       if (!json) return;
       try {
-        const s = await claimSession();
-        maintainPool().catch(() => {}); // top the pool back up right away, don't block the response
-        return send(res, json, 202, s);
+        const ticket = url.searchParams.get("ticket") || null;
+        // Decide + claim ATOMICALLY w.r.t. other POST /sessions (see withClaimLock) so two polls
+        // can't both see the same free slot and both grant. Send the response outside the lock.
+        const result = await withClaimLock(async () => {
+          const active = liveSessions(await listSessions()).filter(isClaimed).length;
+          const slotFree = active < MAX_ACTIVE;
+          if (ticket) {
+            const pos = touchTicket(ticket); // refresh lease + get position
+            if (slotFree && pos === 0) {
+              queue = queue.filter((q) => q.ticket !== ticket); // dequeue the front, then serve it
+              return { code: 202, body: await claimSession(), grant: true };
+            }
+            return { code: 200, body: { queued: true, ticket, position: pos, waiting: queue.length } };
+          }
+          pruneQueue();
+          if (slotFree && queue.length === 0) {
+            return { code: 202, body: await claimSession(), grant: true }; // room now, nobody ahead
+          }
+          const t = newTicket();
+          return { code: 200, body: { queued: true, ticket: t, position: touchTicket(t), waiting: queue.length } };
+        });
+        if (result.grant) maintainPool().catch(() => {}); // top the pool back up (outside the lock)
+        return send(res, json, result.code, result.body);
       } catch (e) {
-        if (e.code === "CAPACITY") return send(res, json, 429, { error: "at capacity", retryAfter: 30 });
+        if (e.code === "CAPACITY") return send(res, json, 429, { error: "at capacity", retryAfter: 5 });
         throw e;
       }
     }
@@ -281,6 +358,6 @@ setInterval(() => reap().catch((e) => console.error(`[provisioner] reap: ${e.mes
 setInterval(() => maintainPool().catch((e) => console.error(`[provisioner] pool: ${e.message}`)), POOL_INTERVAL_MS);
 server.listen(PORT, () =>
   console.log(
-    `[provisioner] listening on :${PORT} — cap ${MAX_SESSIONS}, warm pool ${WARM_POOL}, idle TTL ${IDLE_TTL_S}s`,
+    `[provisioner] listening on :${PORT} — ${MAX_ACTIVE} active max, ${MAX_SESSIONS} total, warm pool ${WARM_POOL}, idle TTL ${IDLE_TTL_S}s`,
   ),
 );
