@@ -18,12 +18,18 @@ API_URL          ?= https://api.gunbarrelstudio.com/
 BUCKET           ?= gunbarrelstudio-experimentation-web
 DISTRIBUTION_ID  ?= E2DYGW2SI4X3N0
 REGION           ?= us-east-2
-INSTANCE_ID      ?= i-0f2138fa43d30ccd7
+INSTANCE_ID      ?= i-06428a5ce78518cea # the Phase 2 box (prod since the cutover EIP swap)
 EC2_USER         ?= ec2-user
 EC2_HOST         ?= 3.151.8.246
 SSH_KEY          ?= ~/.ssh/experimentation-ec2.pem
 REMOTE_DIR       ?= experimentation
 COMPOSE          := docker compose -f docker-compose.prod.yml
+
+# --- dev environment (Phase 2 blue-green: devexperimentation + api-dev, own bucket + CDN) ---
+DEV_API_URL          ?= https://api-dev.gunbarrelstudio.com/
+DEV_BUCKET           ?= gunbarrelstudio-experimentation-web-dev
+DEV_DISTRIBUTION_ID  ?= E25MYRGN4D1A30
+DEV_EC2_HOST         ?= 3.132.245.212
 LOCAL_PORT       ?= 8080
 WEB_PORT         ?= 3000
 # WEB_ORIGIN must follow WEB_PORT: it becomes logstream's ALLOWED_ORIGIN, so a dev server
@@ -35,7 +41,7 @@ RSYNC_EXCLUDES := --exclude node_modules --exclude .next --exclude out --exclude
                   --exclude .venv --exclude web --exclude terraform --exclude .env --exclude .DS_Store
 
 .DEFAULT_GOAL := help
-.PHONY: help build sync invalidate frontend backend seed deploy ssh ps list-backend logs logs-all logs-fresh logs-reset start stop status \
+.PHONY: help build sync invalidate frontend frontend-dev backend seed deploy ssh ps list-backend logs logs-all logs-fresh logs-reset start stop status \
         local-up local-seed local-web local-web-stop local-bounce local-logs local-ps local-down
 
 help: ## List available targets
@@ -74,6 +80,9 @@ frontend: ## Full frontend deploy: build -> sync -> invalidate
 	$(MAKE) build
 	$(MAKE) sync
 	$(MAKE) invalidate
+
+frontend-dev: ## Deploy the frontend to the DEV env (Phase 2): dev API baked in -> dev bucket -> dev CDN
+	$(MAKE) frontend API_URL=$(DEV_API_URL) BUCKET=$(DEV_BUCKET) DISTRIBUTION_ID=$(DEV_DISTRIBUTION_ID)
 
 .PHONY: maintenance
 maintenance: ## Put the static "under construction" page at the site root (S3 only, no EC2)

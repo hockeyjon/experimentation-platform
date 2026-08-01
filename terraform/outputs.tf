@@ -1,4 +1,5 @@
-# Everything you need to finish the wiring at GoDaddy + deploys.
+# Frontend wiring (GoDaddy + deploys). The backend EC2/EIP/SG/key are hand-managed (not
+# Terraform) since the prod box was built out by hand (k3s + Phase 2) — see CUTOVER.md.
 
 output "acm_validation_record" {
   description = "Add this CNAME at GoDaddy to validate the certificate (strip the domain from Name, drop trailing dots)."
@@ -22,27 +23,7 @@ output "cloudfront_distribution_id" {
   value       = aws_cloudfront_distribution.frontend.id
 }
 
-output "api_public_ip" {
-  description = "GoDaddy: point the `api` A record at this Elastic IP."
-  value       = aws_eip.backend.public_ip
-}
-
-output "instance_id" {
-  description = "EC2 instance id (for the Makefile start/stop targets)."
-  value       = aws_instance.backend.id
-}
-
 output "bucket_name" {
   description = "Sync your built frontend (web/out/) here."
   value       = aws_s3_bucket.frontend.bucket
-}
-
-output "ssh_key_path" {
-  description = "Terraform wrote the private key here (chmod 400)."
-  value       = local_sensitive_file.ec2_pem.filename
-}
-
-output "ssh_command" {
-  description = "SSH into the new instance."
-  value       = "ssh -i ${local_sensitive_file.ec2_pem.filename} ec2-user@${aws_eip.backend.public_ip}"
 }
