@@ -2,7 +2,7 @@
 // The dashboard. A client component that reads state from Redux and dispatches the
 // async thunks (which call the GraphQL API). The enrolled-customer board is the
 // source of truth for the results table, and it persists across reloads (localStorage).
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useAppDispatch, useAppSelector, loadPersistedAssignments } from "@/store";
 import { useStatsStream } from "@/hooks/useStatsStream";
 import {
@@ -10,6 +10,7 @@ import {
   wsBase,
   TOKEN,
   createSession,
+  isQueued,
   waitUntilReady,
   heartbeat as sessionHeartbeat,
   releaseSession,
@@ -36,6 +37,8 @@ export default function Dashboard() {
     (s) => s.experiments,
   );
   const [tab, setTab] = useState<"frontend" | "backend">("frontend");
+  // The "About" overlay (project + phase descriptions), opened from the title-bar pill.
+  const [about, setAbout] = useState(false);
   // First-load entry modal (Phase 2). Starts "provisioning" (logo + title + spinner while this
   // visitor's own isolated stack spins up), then resolves to "welcome" (ready — offer the tour),
   // "busy" (every session slot is taken — the provisioner's 429), or "error" (spin-up failed).
@@ -47,6 +50,15 @@ export default function Dashboard() {
   const [tourStep, setTourStep] = useState(0);
   // Bumped to re-run the provisioning effect when the visitor retries after busy/error.
   const [attempt, setAttempt] = useState(0);
+  // 0-based place in the FIFO waiting line while at capacity (0 = next up), or null when not queued.
+  const [queuePos, setQueuePos] = useState<number | null>(null);
+  // Idle-revoke: a live session is released after IDLE_TIMEOUT_SECONDS of inactivity.
+  const [sessionLive, setSessionLive] = useState(false); // a claimed stack is in use
+  const [idleRemaining, setIdleRemaining] = useState<number | null>(null); // countdown secs, or null
+  const [sessionEnded, setSessionEnded] = useState(false); // released for going idle
+  const activeIdRef = useRef<string | null>(null); // the live session id, for revoke
+  const hbRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined); // heartbeat handle
+  const lastActivityRef = useRef(0); // epoch ms of the last user activity
 
   // On load (and on each retry): ask the provisioner for our OWN isolated stack, wait for it to
   // come up (~30–60s), then point the app at /s/<id>, load that stack's experiments, and
@@ -58,23 +70,52 @@ export default function Dashboard() {
     let id: string | null = null;
 
     setEntryState("provisioning");
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     (async () => {
-      try {
-        const created = await createSession();
-        if (cancelled) return;
-        if (created === "at-capacity") return void setEntryState("busy");
-        id = created.id;
-        await waitUntilReady(id);
-        if (cancelled) return;
-        // From here on, every backend caller resolves to THIS session's stack.
-        setSessionId(id);
-        dispatch(fetchExperiments());
-        dispatch(hydrateAssignments(loadPersistedAssignments()));
-        hb = setInterval(() => id && sessionHeartbeat(id), SESSION_HEARTBEAT_MS);
-        setEntryState("welcome");
-      } catch (e) {
-        if (!cancelled) setEntryState("error");
-        console.error("[session] provisioning failed", e);
+      // Keep trying until we hold a ready stack. Two things can go wrong transiently under load,
+      // and both self-heal here so the visitor never dead-ends on an error:
+      //   • at capacity → poll until a slot frees (a claim only succeeds when one genuinely is).
+      //   • a boot times out (contention when several stacks come up at once) → release it and
+      //     retry after a beat, exactly what clicking "Try again" did.
+      for (let attemptN = 1; !cancelled; attemptN++) {
+        try {
+          let created = await createSession();
+          while (isQueued(created)) {
+            if (cancelled) return;
+            setQueuePos(created.position); // show place in line
+            setEntryState("busy");
+            await sleep(BUSY_POLL_MS);
+            if (cancelled) return;
+            created = await createSession(created.ticket || undefined); // poll, holding our place
+          }
+          if (cancelled) return;
+          setQueuePos(null);
+          setEntryState("provisioning"); // instant if it's the warm reserve
+          id = created.id;
+          await waitUntilReady(id);
+          if (cancelled) return;
+          // From here on, every backend caller resolves to THIS session's stack.
+          setSessionId(id);
+          dispatch(fetchExperiments());
+          dispatch(hydrateAssignments(loadPersistedAssignments()));
+          hb = setInterval(() => id && sessionHeartbeat(id), SESSION_HEARTBEAT_MS);
+          hbRef.current = hb;
+          activeIdRef.current = id;
+          lastActivityRef.current = Date.now();
+          setSessionLive(true); // arm the idle watcher
+          setEntryState("welcome");
+          return;
+        } catch (e) {
+          console.error(`[session] provisioning attempt ${attemptN} failed`, e);
+          if (cancelled) return;
+          // Free the stack that didn't come up so its slot reopens, then retry (or give up).
+          if (id) releaseSession(id);
+          id = null;
+          setSessionId(null);
+          if (attemptN >= MAX_PROVISION_ATTEMPTS) return void setEntryState("error");
+          setEntryState("provisioning");
+          await sleep(PROVISION_RETRY_MS);
+        }
       }
     })();
 
@@ -83,11 +124,54 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
       if (hb) clearInterval(hb);
+      hbRef.current = undefined;
+      activeIdRef.current = null;
       window.removeEventListener("pagehide", onHide);
       if (id) releaseSession(id);
       setSessionId(null);
+      setSessionLive(false);
     };
   }, [attempt, dispatch]);
+
+  // Release the session (server + local), stop the heartbeat, and show the "ended" screen.
+  const revokeSession = useCallback(() => {
+    if (hbRef.current) clearInterval(hbRef.current);
+    hbRef.current = undefined;
+    const id = activeIdRef.current;
+    activeIdRef.current = null;
+    if (id) releaseSession(id);
+    setSessionId(null);
+    setSessionLive(false);
+    setIdleRemaining(null);
+    setSessionEnded(true);
+  }, []);
+
+  // "I'm still here" / any activity → clear the warning and restart the idle clock.
+  const resetIdle = useCallback(() => {
+    lastActivityRef.current = Date.now();
+    setIdleRemaining(null);
+  }, []);
+
+  // Idle-revoke watcher: while a session is live, track user activity. Warn with a countdown for
+  // the final IDLE_WARNING_SECONDS, then release the session so the slot frees for the next visitor.
+  useEffect(() => {
+    if (!sessionLive) return;
+    lastActivityRef.current = Date.now();
+    const bump = () => (lastActivityRef.current = Date.now());
+    const events = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "wheel"];
+    events.forEach((e) => window.addEventListener(e, bump, { passive: true }));
+    const iv = setInterval(() => {
+      const idle = (Date.now() - lastActivityRef.current) / 1000;
+      if (idle >= IDLE_TIMEOUT_SECONDS) revokeSession();
+      else if (idle >= IDLE_TIMEOUT_SECONDS - IDLE_WARNING_SECONDS)
+        setIdleRemaining(Math.ceil(IDLE_TIMEOUT_SECONDS - idle));
+      else setIdleRemaining(null);
+    }, 1000);
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, bump));
+      clearInterval(iv);
+    };
+  }, [sessionLive, revokeSession]);
 
   const selected = items.find((e) => e.key === selectedKey) ?? null;
 
@@ -112,6 +196,7 @@ export default function Dashboard() {
       {entryState !== "done" && (
         <EntryModal
           state={entryState}
+          position={queuePos}
           onSkip={() => setEntryState("done")}
           onRetry={() => setAttempt((a) => a + 1)}
           onStartTour={() => {
@@ -122,9 +207,46 @@ export default function Dashboard() {
         />
       )}
       {tourStep === 12 && <TourDoneModal onEnd={() => setTourStep(0)} />}
+      {about && <AboutModal onDismiss={() => setAbout(false)} />}
+      {idleRemaining !== null && !sessionEnded && (
+        <Modal
+          title="Are you still there?"
+          onDismiss={resetIdle}
+          actions={
+            <button className="primary" autoFocus onClick={resetIdle}>
+              I&apos;m still here
+            </button>
+          }
+        >
+          <p>
+            This is a small demo box, so idle sessions are released for the next visitor. Yours will
+            end in <strong>{idleRemaining}s</strong> unless you continue.
+          </p>
+        </Modal>
+      )}
+      {sessionEnded && (
+        <div className="modal-backdrop">
+          <div className="modal welcome-modal" role="dialog" aria-modal="true">
+            <img className="welcome-logo" src="/logo.png" alt="Experimentation Platform logo" />
+            <h3>Session ended</h3>
+            <p>
+              Your isolated session was released after going idle, freeing the slot for the next
+              visitor. Start a fresh one anytime.
+            </p>
+            <div className="modal-actions welcome-actions">
+              <button className="primary" autoFocus onClick={() => window.location.reload()}>
+                Start a new session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="header">
         <h1>Experimentation Platform</h1>
         <span className="tag">Next.js · Redux · GraphQL · Prisma · Postgres · Mongo · Redis</span>
+        <button className="about-pill" onClick={() => setAbout(true)}>
+          About
+        </button>
       </div>
 
       <div className="tabbar">
@@ -150,7 +272,7 @@ export default function Dashboard() {
           <h2>Experiments</h2>
           {restarting && (
             <p className="muted">
-              <span className="spinner" aria-hidden="true" /> Restarting…
+              <span className="spinner" aria-hidden="true" /> Loading…
             </p>
           )}
           {loading && !restarting && <p className="muted">Loading…</p>}
@@ -197,7 +319,7 @@ export default function Dashboard() {
             // showing an empty-state prompt that looks like the user forgot to click something.
             <div className="restart-panel" role="status" aria-live="polite">
               <span className="spinner spinner-lg" aria-hidden="true" />
-              <p>Restarting the backend…</p>
+              <p>Loading…</p>
               <p className="muted small">
                 api and stats are being recreated. Experiments reload automatically once the API
                 reports ready — usually about 20 seconds.
@@ -219,12 +341,26 @@ export default function Dashboard() {
 
 // How often we refresh the session's idle-TTL lease. Well under the provisioner's 15-min TTL.
 const SESSION_HEARTBEAT_MS = 60_000;
+// Client-side idle-revoke: release this visitor's session after IDLE_TIMEOUT_SECONDS of no
+// activity, warning with a live countdown for the final IDLE_WARNING_SECONDS. Keeps the box's few
+// slots free for real users. Set both small (e.g. 30 / 15) to test the flow quickly.
+const IDLE_TIMEOUT_SECONDS = 300; // 5 min of inactivity → release the session
+const IDLE_WARNING_SECONDS = 60; // show the warning + countdown for the final minute
+// While at capacity, how often to re-attempt a claim so the visitor auto-enters when a slot frees.
+const BUSY_POLL_MS = 4_000;
+// If a stack's boot fails (contention when several come up at once), wait this long, then retry.
+const PROVISION_RETRY_MS = 4_000;
+// Give up and show the error (with a manual retry) only after this many failed boot attempts.
+const MAX_PROVISION_ATTEMPTS = 6;
 
 // A restart isn't done when the container starts — node still runs `prisma db push` and
 // boots. This is the line the api logs when it is actually serving; it must stay in sync
 // with the log.info("startup", …) call in api/src/index.ts.
 const API_READY = /GraphQL API ready/;
-const READY_TIMEOUT_S = 60;
+// Safety net only — the "GraphQL API ready" log line above is the real signal. Generous, because
+// under load (other stacks booting, the pool warming a reserve) a restart's api recreation can
+// take well over a minute; firing this early would fetch into a still-down api ("failed to fetch").
+const READY_TIMEOUT_S = 180;
 
 // How long the guided tour pauses before an auto-advance — long enough to read what just
 // happened, short enough not to drag. The finale gets a longer beat so the "RUNNING" badge
@@ -422,11 +558,13 @@ function CoachTip({
 // behind it to use.
 function EntryModal({
   state,
+  position,
   onSkip,
   onStartTour,
   onRetry,
 }: {
   state: "provisioning" | "welcome" | "busy" | "error";
+  position?: number | null; // 0-based place in the FIFO line while "busy" (0 = next up)
   onSkip?: () => void;
   onStartTour?: () => void;
   onRetry?: () => void;
@@ -466,22 +604,26 @@ function EntryModal({
                 Take the tour
               </button>
             </div>
-            <PhasePanels />
           </>
         )}
 
         {state === "busy" && (
           <>
             <p>
-              Every isolated session is currently in use. Each visitor gets their own private
-              namespace-isolated stack, and they&apos;re all taken right now — try again in a minute.
+              Every isolated session is currently in use — each visitor gets their own private,
+              namespace-isolated stack. Hang tight:{" "}
+              <strong>you&apos;ll drop straight into the tour when it&apos;s your turn.</strong>
             </p>
-            <div className="modal-actions welcome-actions">
-              <button className="primary" autoFocus onClick={onRetry}>
-                Try again
-              </button>
+            <div className="entry-loading" role="status" aria-live="polite">
+              <span className="spinner spinner-lg" aria-hidden="true" />
+              <p className="muted">
+                {position == null
+                  ? "Waiting for an open session…"
+                  : position === 0
+                    ? "You're next in line…"
+                    : `You're #${position + 1} in line…`}
+              </p>
             </div>
-            <PhasePanels />
           </>
         )}
 
@@ -496,7 +638,6 @@ function EntryModal({
                 Try again
               </button>
             </div>
-            <PhasePanels />
           </>
         )}
       </div>
@@ -504,17 +645,70 @@ function EntryModal({
   );
 }
 
-// The Phase 1 / Phase 2 panels, shared by the welcome and at-capacity modals.
+// About overlay — opened from the title-bar pill. The project blurb + the Phase 1 / Phase 2
+// panels that used to live in the welcome modal.
+function AboutModal({ onDismiss }: { onDismiss: () => void }) {
+  const titleId = useId();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onDismiss();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onDismiss]);
+
+  return (
+    <div className="modal-backdrop" onClick={onDismiss}>
+      <div
+        className="modal about-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 id={titleId}>About this project</h3>
+        <p>
+          A working, full-stack A/B experimentation platform, built to mirror a production stack:
+          Next.js + Redux on the frontend, a GraphQL/Prisma API over Postgres, MongoDB, and Redis, a
+          Python significance service, all on Kubernetes (k3s) behind Caddy on AWS. It came together
+          as a pair-programming exercise with Claude — the three phases below trace how it was built,
+          and how my role evolved from observer to collaborator.
+        </p>
+        <PhasePanels />
+        <div className="modal-actions">
+          <button className="primary" autoFocus onClick={onDismiss}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The Phase 0 → 2 story cards, shown in the About overlay — the human/AI collaboration arc, in
+// the builder's own voice.
 function PhasePanels() {
   return (
     <div className="phase-cards">
       <section className="phase-card done">
-        <h4>Phase 1</h4>
+        <h4>Phase 0 — The Big Bang</h4>
         <div className="phase-status">✓ Complete</div>
         <p>
-          A working, full-stack experimentation platform — create experiments, bucket users, log
-          events, and see live significance — deployed on AWS and running on <strong>k3s</strong>{" "}
-          (Kubernetes) behind Caddy, with a guided tour of the whole flow.
+          The initial big bang: I handed Claude the spec and it stood up the entire stack and a
+          minimalist frontend in one shot. That first UI was sparse and unintuitive — just the
+          Simulate / Create&nbsp;Users card with no error checking, a slimmer variant-stats table,
+          and only one button in the whole app: <strong>Create User</strong>.
+        </p>
+      </section>
+
+      <section className="phase-card done">
+        <h4>Phase 1 — The Micro-Manager</h4>
+        <div className="phase-status">✓ Complete</div>
+        <p>
+          I shifted from learner and observer to micro-manager of our pair-programming exercise —
+          owning the code and the UX, iterating in small steps, asking questions and making updates
+          until I understood the whole stack, and steadily guiding Claude toward a far more intuitive
+          user experience.
         </p>
         <div className="phase-stack">
           <code>Next.js · Redux</code>
@@ -530,16 +724,20 @@ function PhasePanels() {
           <code>CloudFront</code>
         </div>
       </section>
+
       <section className="phase-card done">
-        <h4>Phase 2</h4>
+        <h4>Phase 2 — Full Collaboration</h4>
         <div className="phase-status">✓ Live — you&apos;re using it now</div>
         <p>
-          <strong>Per-session isolation</strong>: the stack you&apos;re looking at is your own
-          private, namespace-isolated backend on Kubernetes — provisioned on demand and torn down
-          when you leave. A self-hosted stand-in for EKS multi-tenancy.
+          A true collaboration between Claude and me: we worked together to get Kubernetes running
+          quickly and smoothly, with a <strong>FIFO queue</strong> that lines up waiting visitors and
+          hands each one an isolated namespace session the moment a slot frees. We developed the new
+          Phase 2 stack on a parallel AWS dev environment, then cut production over by swapping the
+          Elastic IP onto the Kubernetes box (same IP, zero DNS wait).
         </p>
         <div className="phase-stack">
           <code>Namespace per session</code>
+          <code>FIFO queue + warm pool</code>
           <code>ResourceQuota</code>
           <code>NetworkPolicy</code>
           <code>Provisioner API</code>
@@ -749,6 +947,24 @@ function BackendLogs({
     }
   }
 
+  // Refill the sidebar after a restart, retrying for a bit: the api may need a moment after it
+  // announces itself (or, on the safety-net path, may still be finishing a contended boot), and a
+  // single fetch into a not-quite-ready api surfaces as "failed to fetch". Idempotent read.
+  async function refillExperiments(): Promise<void> {
+    for (let i = 0; i < 20; i++) {
+      const last = i === 19;
+      try {
+        // Silent while retrying (keeps the spinner, no error flash); the final attempt is loud so
+        // a genuine, lasting failure still surfaces the error instead of spinning forever.
+        await dispatch(fetchExperiments(last ? undefined : { silent: true })).unwrap();
+        return;
+      } catch {
+        if (last) return;
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+  }
+
   async function start(restart: boolean) {
     // wss://api…[/s/<id>]/logstream — this session's own log stream (see lib/session.ts).
     const wsUrl = wsBase() + "/logstream";
@@ -795,9 +1011,9 @@ function BackendLogs({
       readyRef.current = setTimeout(() => {
         readyRef.current = null;
         setResetting(false);
-        setLines((prev) => [...prev, `[logstream] api did not report ready within ${READY_TIMEOUT_S}s`]);
-        // Best effort: try to refill the sidebar anyway rather than leave it empty.
-        dispatch(fetchExperiments());
+        setLines((prev) => [...prev, `[logstream] api slow to report ready — retrying in the background`]);
+        // Keep trying rather than failing once: the api may still be finishing a contended boot.
+        refillExperiments();
       }, READY_TIMEOUT_S * 1000);
     }
 
@@ -806,8 +1022,9 @@ function BackendLogs({
       const line = String(e.data);
       if (API_READY.test(line)) {
         clearBusy();
-        // The api is serving again — refill the sidebar that resetState() emptied.
-        if (restart) dispatch(fetchExperiments());
+        // The api is serving again — refill the sidebar that resetState() emptied (retrying, in
+        // case it needs a beat after announcing itself under load).
+        if (restart) refillExperiments();
       }
       setLines((prev) => [...prev, line].slice(-800));
     };

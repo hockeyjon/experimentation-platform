@@ -86,12 +86,17 @@ const initialState: ExperimentsState = {
 
 // --- async thunks (each is one GraphQL operation) ---
 
-export const fetchExperiments = createAsyncThunk("experiments/fetchAll", async () => {
-  const data = await gql<{ experiments: Experiment[] }>(`
-    { experiments { id key name description status variants { id key name weight isControl } } }
-  `);
-  return data.experiments;
-});
+// `silent: true` (used by the post-restart retry loop) makes a rejection keep the "restarting"
+// spinner up instead of flashing an error — the api may just need another beat to come up.
+export const fetchExperiments = createAsyncThunk(
+  "experiments/fetchAll",
+  async (_opts?: { silent?: boolean }) => {
+    const data = await gql<{ experiments: Experiment[] }>(`
+      { experiments { id key name description status variants { id key name weight isControl } } }
+    `);
+    return data.experiments;
+  },
+);
 
 export const fetchResults = createAsyncThunk("experiments/fetchResults", async (key: string) => {
   const data = await gql<{ results: { experimentKey: string; variants: VariantResult[] } }>(
@@ -186,6 +191,9 @@ const slice = createSlice({
       })
       .addCase(fetchExperiments.rejected, (state, action) => {
         state.loading = false;
+        // A silent retry (post-restart): keep the "restarting" spinner up and swallow the error —
+        // the api is likely just still coming up, and the loop will retry.
+        if (action.meta.arg?.silent) return;
         state.restarting = false; // the api never came back — show the error, not a spinner
         state.error = action.error.message ?? "Failed to load experiments";
       })

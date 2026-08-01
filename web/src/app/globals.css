@@ -38,6 +38,15 @@ a { color: var(--accent); }
   font-size: 12px; color: var(--muted);
   border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
 }
+/* About pill — pushed to the far right of the title bar; opens the About overlay. */
+.header .about-pill {
+  margin-left: auto; align-self: center;
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  color: #fff; background: transparent;
+  border: 1px solid var(--accent); border-radius: 999px; padding: 4px 16px;
+  transition: background .15s;
+}
+.header .about-pill:hover { background: rgba(79, 140, 255, 0.14); }
 
 /* Frontend / Backend tab bar (sits between the header and the content). */
 .tabbar {
@@ -124,8 +133,12 @@ a { color: var(--accent); }
    resolve whether the stream is free (welcome vs busy). */
 .entry-loading { display: flex; justify-content: center; padding: 28px 0 20px; }
 
-/* Phase panels at the bottom of the welcome modal — mirrors the maintenance page (distinct
-   class names so they don't inherit the app's full-size .card styles). */
+/* About overlay — the phase cards stack as a single narrative column (the Phase 0 → 2 story). */
+.about-modal { width: min(680px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; }
+.about-modal .phase-cards { grid-template-columns: 1fr; }
+
+/* Phase panels — the Phase 1 / Phase 2 cards shown in the About overlay (distinct class names
+   so they don't inherit the app's full-size .card styles). */
 .phase-cards { display: grid; gap: 12px; text-align: left; margin-top: 24px; }
 .phase-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
 .phase-card h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 4px; color: var(--muted); }
@@ -415,13 +428,15 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 
 /* Info button + click-toggle popover */
 .info-wrap { position: relative; display: inline-flex; }
+/* Solid accent by default so the "i" reads as an active affordance; grows slightly on hover. */
 .info-btn {
-  width: 18px; height: 18px; border-radius: 50%;
-  border: 1px solid var(--border); background: var(--panel-2); color: var(--muted);
-  font: italic 700 11px/1 Georgia, "Times New Roman", serif; cursor: pointer;
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  font: italic 700 12px/1 Georgia, "Times New Roman", serif; cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  transition: transform 0.12s ease;
 }
-.info-btn:hover { color: var(--text); border-color: var(--accent); }
+.info-btn:hover { transform: scale(1.18); }
 .info-pop {
   position: absolute; top: 24px; left: 0; z-index: 60;
   width: 320px; max-width: 80vw;

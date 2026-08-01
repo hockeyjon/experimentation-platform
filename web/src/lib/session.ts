@@ -42,13 +42,22 @@ const provisionUrl = (path: string) => {
 export type SessionStatus = "provisioning" | "ready" | "failed";
 export type Session = { id: string; status: SessionStatus; path: string };
 
-// POST /provision/sessions → create a session (202) or, if every slot is taken, "at-capacity"
-// (the provisioner's 429). The browser sends its Origin automatically; the provisioner checks it.
-export async function createSession(): Promise<Session | "at-capacity"> {
-  const res = await fetch(provisionUrl("/sessions"), { method: "POST" });
-  if (res.status === 429) return "at-capacity";
+// A place in the FIFO waiting line: hold the ticket and keep calling createSession(ticket) until
+// it's your turn (the response becomes a Session). `position` is 0-based (0 = next up).
+export type QueueStatus = { queued: true; ticket: string; position: number; waiting: number };
+export const isQueued = (r: Session | QueueStatus): r is QueueStatus => "queued" in r;
+
+// POST /provision/sessions → a session (202) when it's our turn, or a queue place (200) when the
+// active slots are full. Pass the ticket from a prior queued response to hold your place in line.
+// The browser sends its Origin automatically; the provisioner checks it.
+export async function createSession(ticket?: string): Promise<Session | QueueStatus> {
+  const path = ticket ? `/sessions?ticket=${encodeURIComponent(ticket)}` : "/sessions";
+  const res = await fetch(provisionUrl(path), { method: "POST" });
+  // A rare race (a slot vanished between the capacity check and the claim) → stay in line and
+  // retry on the next poll rather than erroring.
+  if (res.status === 429) return { queued: true, ticket: ticket ?? "", position: 0, waiting: 1 };
   if (!res.ok) throw new Error(`provision request failed (${res.status})`);
-  return (await res.json()) as Session;
+  return (await res.json()) as Session | QueueStatus;
 }
 
 // GET /provision/sessions/:id → its current status.
@@ -65,7 +74,7 @@ export async function waitUntilReady(
   id: string,
   opts: { timeoutMs?: number; intervalMs?: number; signal?: AbortSignal } = {},
 ): Promise<Session> {
-  const { timeoutMs = 120_000, intervalMs = 2500, signal } = opts;
+  const { timeoutMs = 220_000, intervalMs = 2500, signal } = opts;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (signal?.aborted) throw new DOMException("aborted", "AbortError");
