@@ -738,7 +738,7 @@ function AboutModal({ onDismiss }: { onDismiss: () => void }) {
           A working, full-stack A/B experimentation platform, built to mirror a production stack:
           Next.js + Redux on the frontend, a GraphQL/Prisma API over Postgres, MongoDB, and Redis, a
           Python significance service, all on Kubernetes (k3s) behind Caddy on AWS. It came together
-          as a pair-programming exercise with Claude — the three phases below trace how it was built,
+          as a pair-programming exercise with Claude — the four phases below trace how it was built,
           and how my role evolved from observer to collaborator.
         </p>
         <PhasePanels />
@@ -809,6 +809,29 @@ function PhasePanels() {
           <code>NetworkPolicy</code>
           <code>Provisioner API</code>
           <code>k3s</code>
+        </div>
+      </section>
+
+      <section className="phase-card done">
+        <h4>Phase 3 — Claude in the Product</h4>
+        <div className="phase-status">✓ Live — try the ✳ Claude panel</div>
+        <p>
+          Having built the platform <strong>with</strong> Claude, this phase puts Claude{" "}
+          <strong>inside</strong> it: an <strong>Ask Claude</strong> advisor that reasons over the
+          selected experiment&apos;s variants, buckets, and live stats and gives an honest read on
+          whether it&apos;s safe to launch — it never claims significance the numbers don&apos;t
+          support. A shared, stateless FastAPI + LangGraph agent calls Amazon Bedrock (Claude Haiku)
+          through the EC2 instance role via IMDS — <strong>no API key, data stays in AWS</strong> —
+          and streams the answer to the browser with the Vercel AI SDK.
+        </p>
+        <div className="phase-stack">
+          <code>LangChain</code>
+          <code>LangGraph</code>
+          <code>Amazon Bedrock</code>
+          <code>Claude Haiku</code>
+          <code>Vercel AI SDK</code>
+          <code>FastAPI</code>
+          <code>IAM instance role · IMDS</code>
         </div>
       </section>
     </div>

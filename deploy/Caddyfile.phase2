@@ -10,7 +10,10 @@
 # Model (path-based, no DNS/cert changes): api.gunbarrelstudio.com/s/<id>/… → that session's
 # services, by in-cluster DNS (api.session-<id>.svc.cluster.local). Caddy strips the /s/<id>
 # prefix so each backend sees its normal paths. The provisioner control API lives at /provision.
-api.gunbarrelstudio.com {
+#
+# Both hostnames share this one site block: the prod box answers on api.* (the dev cert is unused
+# there) and the dev box answers on api-dev.* — one Caddyfile, correct on either box.
+api.gunbarrelstudio.com, api-dev.gunbarrelstudio.com {
 	# Provisioner: create / poll / heartbeat / delete sessions (browser → provisioner Service).
 	handle /provision* {
 		uri strip_prefix /provision
