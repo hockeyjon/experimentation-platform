@@ -3,12 +3,14 @@
 // async thunks (which call the GraphQL API). The enrolled-customer board is the
 // source of truth for the results table, and it persists across reloads (localStorage).
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useChat } from "@ai-sdk/react";
 import { useAppDispatch, useAppSelector, loadPersistedAssignments } from "@/store";
 import { useStatsStream } from "@/hooks/useStatsStream";
 import {
   httpBase,
   wsBase,
   TOKEN,
+  agentChatUrl,
   createSession,
   isQueued,
   waitUntilReady,
@@ -28,17 +30,23 @@ import {
   setStatus,
   AssignedUser,
   Experiment,
+  Significance,
   Variant,
 } from "@/store/experimentsSlice";
 
 export default function Dashboard() {
   const dispatch = useAppDispatch();
-  const { items, selectedKey, assignments, loading, error, restarting } = useAppSelector(
+  const { items, selectedKey, assignments, error, restarting } = useAppSelector(
     (s) => s.experiments,
   );
   const [tab, setTab] = useState<"frontend" | "backend">("frontend");
   // The "About" overlay (project + phase descriptions), opened from the title-bar pill.
   const [about, setAbout] = useState(false);
+  // Claude pane: collapsed by default; opened from the tab-bar Claude button to `claudeWidth`% of
+  // the width (drag-adjustable via the divider), closed again from the chevron in the panel.
+  const [claudeOpen, setClaudeOpen] = useState(false);
+  const [claudeWidth, setClaudeWidth] = useState(20);
+  const splitRef = useRef<HTMLDivElement>(null);
   // First-load entry modal (Phase 2). Starts "provisioning" (logo + title + spinner while this
   // visitor's own isolated stack spins up), then resolves to "welcome" (ready — offer the tour),
   // "busy" (every session slot is taken — the provisioner's 429), or "error" (spin-up failed).
@@ -179,6 +187,32 @@ export default function Dashboard() {
   // numbers land in Redux as they change. Re-subscribes on selection change.
   useStatsStream(selectedKey);
 
+  // Auto-select the first experiment so the dropdown + panes are never empty on load.
+  useEffect(() => {
+    if (!selectedKey && items.length > 0) dispatch(selectExperiment(items[0].key));
+  }, [selectedKey, items, dispatch]);
+
+  // Drag the divider to re-split the experiment pane vs. the Claude pane (clamped 45–88%).
+  const startDrag = useCallback((e: { preventDefault: () => void }) => {
+    e.preventDefault();
+    const onMove = (ev: MouseEvent) => {
+      const el = splitRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      setClaudeWidth(Math.min(55, Math.max(22, ((rect.right - ev.clientX) / rect.width) * 100)));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+  }, []);
+
   // Tour finale: after Launch, once the experiment reads RUNNING, pause the configured delay,
   // then jump back to the Backend log stream and show the completion modal.
   useEffect(() => {
@@ -262,73 +296,106 @@ export default function Dashboard() {
         >
           Backend
         </button>
+        <div className="tab-gap tab-gap-l" aria-hidden="true" />
+        <div className="tab-picker">
+          <label htmlFor="exp-select">Experiment</label>
+          <select
+            id="exp-select"
+            value={selectedKey ?? ""}
+            onChange={(e) => dispatch(selectExperiment(e.target.value))}
+          >
+            {items.length === 0 && <option value="">Loading…</option>}
+            {items.map((e) => (
+              <option key={e.id} value={e.key}>
+                {e.name} — {e.status}
+              </option>
+            ))}
+          </select>
+          {restarting && (
+            <span className="muted small">
+              <span className="spinner" aria-hidden="true" /> restarting…
+            </span>
+          )}
+          {error && <span className="error small">{error}</span>}
+        </div>
+        <div className="tab-gap tab-gap-r" aria-hidden="true" />
+        <button
+          className={`claude-tab${claudeOpen ? " active" : ""}`}
+          onClick={() => {
+            setTab("frontend");
+            setClaudeOpen((o) => !o);
+          }}
+          title="Ask Claude about the current experiment"
+          aria-pressed={claudeOpen}
+        >
+          <span className="claude-glyph" aria-hidden="true">✳</span> Claude
+        </button>
       </div>
 
       {/* Both tabs stay mounted; we only hide the inactive one. That keeps the log
           WebSocket alive while you work in the Frontend tab, so the Backend tab
           captures the very logs your frontend actions produce. */}
-      <div className="layout" style={{ display: tab === "frontend" ? "grid" : "none" }}>
-        <aside className="sidebar">
-          <h2>Experiments</h2>
-          {restarting && (
-            <p className="muted">
-              <span className="spinner" aria-hidden="true" /> Loading…
-            </p>
-          )}
-          {loading && !restarting && <p className="muted">Loading…</p>}
-          {error && <p className="error">{error}</p>}
-          {items.map((e) => (
-            <button
-              key={e.id}
-              className={`exp-item ${e.key === selectedKey ? "active" : ""}`}
-              onClick={() => dispatch(selectExperiment(e.key))}
-            >
-              <div className="k">{e.key}</div>
-              <div className="n">{e.name}</div>
-              <span className={`badge ${e.status}`}>{e.status}</span>
-            </button>
-          ))}
-        </aside>
+      <div
+        className="split"
+        ref={splitRef}
+        style={{ display: tab === "frontend" ? "flex" : "none" }}
+      >
+        <section className="exp-pane">
+          <div className="exp-cards">
+            {selected ? (
+              <>
+                <ResultsCard
+                  experiment={selected}
+                  users={assignments.filter((a) => a.experimentKey === selected.key)}
+                  tourStep={tourStep}
+                  setTourStep={setTourStep}
+                />
+                {/* key forces a fresh AssignCard (input, variant select, pill) per experiment */}
+                <AssignCard
+                  key={selected.key}
+                  experimentKey={selected.key}
+                  variants={selected.variants}
+                  tourStep={tourStep}
+                  setTourStep={setTourStep}
+                />
+                <UserBoard
+                  experimentKey={selected.key}
+                  variants={selected.variants}
+                  tourStep={tourStep}
+                  setTourStep={setTourStep}
+                />
+              </>
+            ) : restarting ? (
+              <div className="restart-panel" role="status" aria-live="polite">
+                <span className="spinner spinner-lg" aria-hidden="true" />
+                <p>Loading…</p>
+                <p className="muted small">
+                  api and stats are being recreated. Experiments reload automatically once the API
+                  reports ready — usually about 20 seconds.
+                </p>
+              </div>
+            ) : (
+              <p className="muted">Loading…</p>
+            )}
+          </div>
+        </section>
 
-        <main className="main">
-          {selected ? (
-            <>
-              <ResultsCard
-                experiment={selected}
-                users={assignments.filter((a) => a.experimentKey === selected.key)}
-                tourStep={tourStep}
-                setTourStep={setTourStep}
-              />
-              {/* key forces a fresh AssignCard (input, variant select, pill) per experiment */}
-              <AssignCard
-                key={selected.key}
-                experimentKey={selected.key}
-                variants={selected.variants}
-                tourStep={tourStep}
-                setTourStep={setTourStep}
-              />
-              <UserBoard
-                experimentKey={selected.key}
-                variants={selected.variants}
-                tourStep={tourStep}
-                setTourStep={setTourStep}
-              />
-            </>
-          ) : restarting ? (
-            // The backend is genuinely gone for ~20s after Restart — say that, rather than
-            // showing an empty-state prompt that looks like the user forgot to click something.
-            <div className="restart-panel" role="status" aria-live="polite">
-              <span className="spinner spinner-lg" aria-hidden="true" />
-              <p>Loading…</p>
-              <p className="muted small">
-                api and stats are being recreated. Experiments reload automatically once the API
-                reports ready — usually about 20 seconds.
-              </p>
-            </div>
-          ) : (
-            <p className="muted">Select an experiment.</p>
-          )}
-        </main>
+        {claudeOpen && (
+          <div
+            className="split-divider"
+            onMouseDown={startDrag}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Drag to resize the experiment and Claude panes"
+          />
+        )}
+
+        <aside
+          className={`claude-pane${claudeOpen ? " open" : ""}`}
+          style={{ width: claudeOpen ? `${claudeWidth}%` : 0 }}
+        >
+          <AdvisorPanel selectedKey={selectedKey} onClose={() => setClaudeOpen(false)} />
+        </aside>
       </div>
       <BackendLogs active={tab === "backend"} tourStep={tourStep} setTourStep={setTourStep} setTab={setTab} />
     </>
@@ -1197,6 +1264,198 @@ function VariantTag(props: { isControl: boolean }) {
   );
 }
 
+// Compact context sent to the advisor: exactly the numbers shown in the results table (live stats
+// when the Python service has pushed them, else the local enrolled-board counts). The LLM reasons
+// over this and nothing else.
+type AdvisorContext = {
+  key: string;
+  name: string;
+  status: string;
+  variants: {
+    name: string;
+    isControl: boolean;
+    exposures: number;
+    conversions: number;
+    rate: number;
+    lift: number | null;
+    pValue: number | null;
+    significant: boolean;
+  }[];
+};
+
+function buildAdvisorContext(
+  experiment: Experiment,
+  users: AssignedUser[],
+  pushed: Significance | undefined,
+): AdvisorContext {
+  const control = experiment.variants.find((v) => v.isControl) ?? experiment.variants[0];
+  const byKey = new Map((pushed?.variants ?? []).map((v) => [v.variantKey, v]));
+  return {
+    key: experiment.key,
+    name: experiment.name,
+    status: experiment.status,
+    variants: experiment.variants.map((v) => {
+      const stat = byKey.get(v.key);
+      const inV = users.filter((u) => u.variantKey === v.key);
+      const exposures = stat ? stat.exposures : inV.length;
+      const conversions = stat ? stat.conversions : inV.filter((u) => u.converted).length;
+      return {
+        name: v.name,
+        isControl: v.key === control?.key,
+        exposures,
+        conversions,
+        rate: exposures ? Number((conversions / exposures).toFixed(3)) : 0,
+        lift: stat ? Number((stat.liftPct / 100).toFixed(3)) : null,
+        pValue: stat ? stat.pValue : null,
+        significant: stat ? stat.significant : false,
+      };
+    }),
+  };
+}
+
+// Minimal markdown: render **bold** spans. Newlines are preserved via white-space: pre-wrap.
+function renderMd(text: string): ReactNode[] {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+    part.startsWith("**") && part.endsWith("**") ? (
+      <strong key={i}>{part.slice(2, -2)}</strong>
+    ) : (
+      <span key={i}>{part}</span>
+    ),
+  );
+}
+
+// Left-pane advisor: streams a Claude answer (Bedrock) about the SELECTED experiment. The shared,
+// stateless agent gets everything it needs from `context` — no per-session backend access.
+function AdvisorPanel({
+  selectedKey,
+  onClose,
+}: {
+  selectedKey: string | null;
+  onClose: () => void;
+}) {
+  const experiment = useAppSelector(
+    (s) => s.experiments.items.find((e) => e.key === selectedKey) ?? null,
+  );
+  const users = useAppSelector((s) =>
+    s.experiments.assignments.filter((a) => a.experimentKey === selectedKey),
+  );
+  const pushed = useAppSelector((s) =>
+    selectedKey ? s.experiments.significanceByKey[selectedKey] : undefined,
+  );
+
+  const { messages, input, handleInputChange, handleSubmit, status } = useChat({
+    api: agentChatUrl(),
+    streamProtocol: "text",
+  });
+  const logRef = useRef<HTMLDivElement>(null);
+  // Keep the newest exchange in view: the log is bottom-anchored, so the input sits right under
+  // the last answer and older messages spill off the top. Always jump to the bottom on a freshly
+  // asked question; while an answer streams, only follow if the reader is already near the bottom
+  // (so scrolling up to read history isn't yanked back down).
+  useEffect(() => {
+    const log = logRef.current;
+    if (!log) return;
+    const last = messages[messages.length - 1];
+    const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+    if (last?.role === "user" || nearBottom) log.scrollTop = log.scrollHeight;
+  }, [messages]);
+
+  // Auto-grow the textarea to its content so the whole question is always visible.
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const ta = taRef.current;
+    if (ta) {
+      ta.style.height = "auto";
+      ta.style.height = `${ta.scrollHeight}px`;
+    }
+  }, [input]);
+
+  if (!experiment) return null;
+  const busy = status === "submitted" || status === "streaming";
+  const context = buildAdvisorContext(experiment, users, pushed);
+  const last = messages[messages.length - 1];
+
+  return (
+    <div className="advisor">
+      <div className="advisor-head">
+        <h2>Ask Claude…</h2>
+        <button
+          type="button"
+          className="advisor-collapse"
+          onClick={onClose}
+          title="Collapse"
+          aria-label="Collapse Claude"
+        >
+          ›
+        </button>
+      </div>
+      <div className="advisor-log" ref={logRef} aria-live="polite">
+        {messages.length === 0 ? (
+          <p className="muted small">
+            Ask about the variants, buckets, or stats — or whether it&apos;s safe to launch.
+          </p>
+        ) : (
+          messages.map((m) => (
+            <div key={m.id} className={`advisor-msg ${m.role}`}>
+              {m.role === "assistant" ? renderMd(m.content) : m.content}
+            </div>
+          ))
+        )}
+        {busy && last?.role !== "assistant" && (
+          <div className="advisor-msg assistant">
+            <span className="spinner" aria-hidden="true" /> thinking…
+          </div>
+        )}
+      </div>
+      <form className="advisor-form" onSubmit={(e) => handleSubmit(e, { body: { context } })}>
+        <textarea
+          value={input}
+          onChange={handleInputChange}
+          onKeyDown={(e) => {
+            // Enter sends; Shift+Enter inserts a newline.
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              if (input.trim() && !busy) handleSubmit(e, { body: { context } });
+            }
+          }}
+          ref={taRef}
+          placeholder="Should I launch to production?"
+          rows={1}
+          disabled={busy}
+        />
+        <button type="submit" className="primary" disabled={busy || !input.trim()}>
+          Ask
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// A chevron in a card's top-right corner that collapses / expands the card body. Chevron points
+// up (⌃) when open — click to collapse; down (⌄) when collapsed — click to expand.
+function CardToggle({
+  collapsed,
+  onToggle,
+  label,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      className="card-toggle"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      aria-label={`${collapsed ? "Expand" : "Collapse"} ${label}`}
+      title={collapsed ? "Expand" : "Collapse"}
+    >
+      {collapsed ? "⌄" : "⌃"}
+    </button>
+  );
+}
+
 function ResultsCard(props: {
   experiment: Experiment;
   users: AssignedUser[];
@@ -1206,15 +1465,14 @@ function ResultsCard(props: {
   const dispatch = useAppDispatch();
   const { experiment, users } = props;
   const running = experiment.status === "RUNNING";
+  const [collapsed, setCollapsed] = useState(false);
 
   // The control variant is the one flagged in the experiment definition (not inferred).
   const controlVariant = experiment.variants.find((v) => v.isControl) ?? experiment.variants[0];
 
   // Backend numbers, pushed from the Python stats service over SSE (see useStatsStream).
   const pushed = useAppSelector((s) => s.experiments.significanceByKey[experiment.key]);
-  const connected = useAppSelector((s) => s.experiments.statsConnected);
   const byKey = new Map((pushed?.variants ?? []).map((v) => [v.variantKey, v]));
-  const live = byKey.size > 0;
 
   // Rows are always driven by the experiment's own variant order, never the payload's, so
   // a push can't reorder the table under the reader. Until the first frame arrives we fall
@@ -1252,14 +1510,18 @@ function ResultsCard(props: {
 
   return (
     <div className="card stats-sticky">
+      <CardToggle collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} label="results" />
       <h3 className="card-title">
         {experiment.name}
         <span className={`badge ${experiment.status}`}>{experiment.status}</span>
         <InfoButton text={experiment.description ?? "No description."} />
       </h3>
 
+      {!collapsed && (
+      <>
       {/* The table always renders. With nobody enrolled every row is simply zeroed — the
           shape of the results stays on screen instead of appearing once traffic arrives. */}
+      <div className="table-wrap">
       <table>
         <thead>
           <tr>
@@ -1304,23 +1566,7 @@ function ResultsCard(props: {
           })}
         </tbody>
       </table>
-      <p className="muted small">
-        {live && connected ? (
-          <>
-            <span className="live-dot" aria-hidden="true" /> Computed by the Python stats service
-            (two-proportion z-test, α = 0.05) and pushed over SSE. ✓ marks significance.
-          </>
-        ) : live ? (
-          // Numbers stay on screen while we reconnect, but say so — a frozen table that
-          // looks live is worse than a stale one that admits it.
-          <>
-            <span className="spinner" aria-hidden="true" /> Reconnecting to the stats service —
-            figures below are from the last update.
-          </>
-        ) : (
-          "Waiting for the stats service — showing locally counted values."
-        )}
-      </p>
+      </div>
       {users.length === 0 && (
         <p className="muted small">No customers enrolled yet — use the enrollment tools below.</p>
       )}
@@ -1354,6 +1600,8 @@ function ResultsCard(props: {
           Roll back from production
         </button>
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -1366,6 +1614,7 @@ function AssignCard(props: {
 }) {
   const dispatch = useAppDispatch();
   const error = useAppSelector((s) => s.experiments.error);
+  const [collapsed, setCollapsed] = useState(false);
   const userCount = useAppSelector(
     (s) => s.experiments.assignments.filter((a) => a.experimentKey === props.experimentKey).length,
   );
@@ -1419,10 +1668,13 @@ function AssignCard(props: {
 
   return (
     <div className="card">
+      <CardToggle collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} label="Enroll Customers" />
       <h3 className="card-title">
         Enroll Customers
         <InfoButton text="Simulate customers getting enrolled as new clients who are going to be guinea pigs and get put into the corresponding variant buckets." />
       </h3>
+      {!collapsed && (
+      <>
       <div className="row">
         <div>
           <label>Customer ID</label>
@@ -1469,6 +1721,8 @@ function AssignCard(props: {
             </div>
           ))}
       </div>
+      </>
+      )}
     </div>
   );
 }
@@ -1487,6 +1741,7 @@ function UserBoard(props: {
   );
   const hasUsers = users.length > 0;
   const boardRef = useRef<HTMLDivElement | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
 
   // Tour step 6: bring the whole Enrolled Customers panel into view.
   useEffect(() => {
@@ -1513,11 +1768,14 @@ function UserBoard(props: {
 
   return (
     <div className="card" ref={boardRef}>
+      <CardToggle collapsed={collapsed} onToggle={() => setCollapsed((c) => !c)} label="Enrolled Customers" />
       <h3 className="card-title">
         Enrolled Customers
         <InfoButton text="Each enrolled customer lands in one variant column. Record a success (conversion) per customer — the blue button disables once recorded. Seed adds 5 customers to each variant; Clear empties the board." />
       </h3>
 
+      {!collapsed && (
+      <>
       <div className="board-toolbar">
         <span className="tour-anchor">
           <button
@@ -1606,6 +1864,8 @@ function UserBoard(props: {
           );
         })}
       </div>
+      </>
+      )}
     </div>
   );
 }

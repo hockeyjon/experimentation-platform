@@ -28,8 +28,8 @@ COMPOSE          := docker compose -f docker-compose.prod.yml
 # --- dev environment (Phase 2 blue-green: devexperimentation + api-dev, own bucket + CDN) ---
 DEV_API_URL          ?= https://api-dev.gunbarrelstudio.com/
 DEV_BUCKET           ?= gunbarrelstudio-experimentation-web-dev
-DEV_DISTRIBUTION_ID  ?= E25MYRGN4D1A30
-DEV_EC2_HOST         ?= 3.132.245.212
+DEV_DISTRIBUTION_ID  ?= E36SSW09AANORI
+DEV_EC2_HOST         ?= 3.144.147.84
 LOCAL_PORT       ?= 8080
 WEB_PORT         ?= 3000
 # WEB_ORIGIN must follow WEB_PORT: it becomes logstream's ALLOWED_ORIGIN, so a dev server

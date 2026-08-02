@@ -17,6 +17,14 @@ api.gunbarrelstudio.com {
 		reverse_proxy provisioner:8090
 	}
 
+	# Phase 3 advisor (shared, not session-scoped): /agent/chat streams a Claude answer. No prefix
+	# strip — the app owns /agent/*. flush_interval -1 pushes tokens through immediately (no buffering).
+	handle /agent* {
+		reverse_proxy agent:8000 {
+			flush_interval -1
+		}
+	}
+
 	# A session's log stream: /s/<id>/logstream… → logstream in namespace session-<id>.
 	@session_logstream path_regexp sls ^/s/([a-z0-9]+)/logstream
 	handle @session_logstream {
