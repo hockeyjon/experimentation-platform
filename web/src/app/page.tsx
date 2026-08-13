@@ -2,8 +2,18 @@
 // The dashboard. A client component that reads state from Redux and dispatches the
 // async thunks (which call the GraphQL API). The enrolled-customer board is the
 // source of truth for the results table, and it persists across reloads (localStorage).
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { useChat } from "@ai-sdk/react";
+import AboutStack from "./about/AboutStack";
+import AboutClaude from "./about/AboutClaude";
 import { useAppDispatch, useAppSelector, loadPersistedAssignments } from "@/store";
 import { useStatsStream } from "@/hooks/useStatsStream";
 import {
@@ -34,14 +44,39 @@ import {
   Variant,
 } from "@/store/experimentsSlice";
 
+// Local / no-Kubernetes mode. Set NEXT_PUBLIC_SESSION_MODE=shared (see `make local-web`) to run the
+// app against a single SHARED backend — the docker-compose local stack — instead of provisioning a
+// per-visitor Kubernetes session. The session id stays null, so every backend call targets the
+// origin directly (no /s/<id> prefix), exactly the Phase-1 shared-backend model.
+const SHARED_MODE = process.env.NEXT_PUBLIC_SESSION_MODE === "shared";
+
 export default function Dashboard() {
   const dispatch = useAppDispatch();
   const { items, selectedKey, assignments, error, restarting } = useAppSelector(
     (s) => s.experiments,
   );
   const [tab, setTab] = useState<"frontend" | "backend">("frontend");
-  // The "About" overlay (project + phase descriptions), opened from the title-bar pill.
+  // The "About" overlay (the stack diagram), opened from the title-bar pill.
   const [about, setAbout] = useState(false);
+  // The parked "About → Claude" overlay (the collaboration story), opened only via ⌘⇧A.
+  const [aboutClaude, setAboutClaude] = useState(false);
+  // ⌘A (Cmd/Ctrl + A) reveals the parked AboutClaude modal. This overrides browser "Select All",
+  // so we bow out when focus is in a text field — Cmd/Ctrl+A still selects text there. Opening it
+  // closes the stack overlay so the two never stack.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.code === "KeyA") {
+        const el = e.target as HTMLElement | null;
+        if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable))
+          return; // let select-all work while typing
+        e.preventDefault();
+        setAbout(false);
+        setAboutClaude(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // Claude pane: collapsed by default; opened from the tab-bar Claude button to `claudeWidth`% of
   // the width (drag-adjustable via the divider), closed again from the chevron in the panel.
   const [claudeOpen, setClaudeOpen] = useState(false);
@@ -53,7 +88,7 @@ export default function Dashboard() {
   // "done" once dismissed.
   const [entryState, setEntryState] = useState<
     "provisioning" | "welcome" | "busy" | "error" | "done"
-  >("provisioning");
+  >(SHARED_MODE ? "welcome" : "provisioning"); // shared mode has no provisioning step
   // Guided tour progress. 0 = not running; each step drives a toast tip (+ any navigation).
   const [tourStep, setTourStep] = useState(0);
   // Bumped to re-run the provisioning effect when the visitor retries after busy/error.
@@ -76,6 +111,17 @@ export default function Dashboard() {
     let cancelled = false;
     let hb: ReturnType<typeof setInterval> | undefined;
     let id: string | null = null;
+
+    // Local / no-Kubernetes mode: no provisioner, so skip session provisioning entirely and talk
+    // straight to the shared backend at the origin (id stays null → no /s/<id> prefix). No
+    // heartbeat and no idle-revoke — those exist only to manage a per-visitor Kubernetes session.
+    if (SHARED_MODE) {
+      setSessionId(null);
+      dispatch(fetchExperiments());
+      dispatch(hydrateAssignments(loadPersistedAssignments()));
+      setEntryState("welcome");
+      return () => setSessionId(null);
+    }
 
     setEntryState("provisioning");
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -216,10 +262,10 @@ export default function Dashboard() {
   // Tour finale: after Launch, once the experiment reads RUNNING, pause the configured delay,
   // then jump back to the Backend log stream and show the completion modal.
   useEffect(() => {
-    if (tourStep === 11 && selected?.status === "RUNNING") {
+    if (tourStep === 13 && selected?.status === "RUNNING") {
       const t = setTimeout(() => {
         setTab("backend");
-        setTourStep(12);
+        setTourStep(14);
       }, TOUR_FINALE_DELAY_MS);
       return () => clearTimeout(t);
     }
@@ -240,8 +286,9 @@ export default function Dashboard() {
           }}
         />
       )}
-      {tourStep === 12 && <TourDoneModal onEnd={() => setTourStep(0)} />}
-      {about && <AboutModal onDismiss={() => setAbout(false)} />}
+      {tourStep === 14 && <TourDoneModal onEnd={() => setTourStep(0)} />}
+      {about && <AboutStack onDismiss={() => setAbout(false)} />}
+      {aboutClaude && <AboutClaude onDismiss={() => setAboutClaude(false)} />}
       {idleRemaining !== null && !sessionEnded && (
         <Modal
           title="Are you still there?"
@@ -302,7 +349,10 @@ export default function Dashboard() {
           <select
             id="exp-select"
             value={selectedKey ?? ""}
-            onChange={(e) => dispatch(selectExperiment(e.target.value))}
+            onChange={(e) => {
+              dispatch(selectExperiment(e.target.value));
+              setTab("frontend"); // picking an experiment jumps to where you can work with it
+            }}
           >
             {items.length === 0 && <option value="">Loading…</option>}
             {items.map((e) => (
@@ -319,17 +369,30 @@ export default function Dashboard() {
           {error && <span className="error small">{error}</span>}
         </div>
         <div className="tab-gap tab-gap-r" aria-hidden="true" />
-        <button
-          className={`claude-tab${claudeOpen ? " active" : ""}`}
-          onClick={() => {
-            setTab("frontend");
-            setClaudeOpen((o) => !o);
-          }}
-          title="Ask Claude about the current experiment"
-          aria-pressed={claudeOpen}
-        >
-          <span className="claude-glyph" aria-hidden="true">✳</span> Claude
-        </button>
+        <span className="tour-anchor claude-tab-anchor">
+          <button
+            className={`claude-tab${claudeOpen ? " active" : ""}`}
+            onClick={() => {
+              setTab("frontend");
+              if (tourStep === 10) {
+                setClaudeOpen(true); // tour: open the pane and move to the ask-input tip
+                setTourStep(11);
+              } else {
+                setClaudeOpen((o) => !o);
+              }
+            }}
+            title="Ask Claude about the current experiment"
+            aria-pressed={claudeOpen}
+          >
+            <span className="claude-glyph" aria-hidden="true">✳</span> Claude
+          </button>
+          {tourStep === 10 && (
+            <CoachTip n={9} placement="left" onClose={() => setTourStep(0)}>
+              Let&apos;s have Claude analyze the current state of the experiment. Click the{" "}
+              <strong>Claude</strong> button.
+            </CoachTip>
+          )}
+        </span>
       </div>
 
       {/* Both tabs stay mounted; we only hide the inactive one. That keeps the log
@@ -394,7 +457,12 @@ export default function Dashboard() {
           className={`claude-pane${claudeOpen ? " open" : ""}`}
           style={{ width: claudeOpen ? `${claudeWidth}%` : 0 }}
         >
-          <AdvisorPanel selectedKey={selectedKey} onClose={() => setClaudeOpen(false)} />
+          <AdvisorPanel
+            selectedKey={selectedKey}
+            onClose={() => setClaudeOpen(false)}
+            tourStep={tourStep}
+            setTourStep={setTourStep}
+          />
         </aside>
       </div>
       <BackendLogs active={tab === "backend"} tourStep={tourStep} setTourStep={setTourStep} setTab={setTab} />
@@ -434,8 +502,8 @@ const READY_TIMEOUT_S = 180;
 // lands before the completion modal takes over.
 const TOUR_STEP_DELAY_MS = 1200;
 const TOUR_FINALE_DELAY_MS = 1800;
-// How many interactive tips the visitor clicks through (drives the "N/9" progress counter).
-const TOUR_TIPS = 9;
+// How many interactive tips the visitor clicks through (drives the "N/11" progress counter).
+const TOUR_TIPS = 11;
 
 // Ask the log-stream service to recreate api + stats before we attach — the `make
 // logs-reset` equivalent. Always resolves to a line for the log view: a failed or throttled
@@ -505,9 +573,11 @@ const ANSI_COLOR: Record<string, string> = {
   "33": "#facc15", // yellow  — postgres
   "38;5;208": "#fb923c", // orange  — mongo
   "38;5;141": "#a78bfa", // violet  — redis
-  "35": "#e879f9", // magenta — [stats]
+  "35": "#e879f9", // magenta — [stats] + [api:stats]
   "38;5;37": "#2dd4bf", // teal    — [api:logEvent]
   "38;5;245": "#94a3b8", // slate   — [logstream]
+  "38;5;149": "#a3e635", // lime    — [api:startup]
+  "38;5;170": "#f472b6", // pink    — [api:experiments]
 };
 
 // A few tags come from sources that don't emit ANSI themselves — the Python stats service,
@@ -515,6 +585,9 @@ const ANSI_COLOR: Record<string, string> = {
 // codes above so the same AnsiLine renderer colors them. Run on each line before rendering.
 const TAG_ANSI: Array<[RegExp, string]> = [
   [/\[stats\]/g, "\x1b[35m$&\x1b[0m"],
+  [/\[api:stats\]/g, "\x1b[35m$&\x1b[0m"],
+  [/\[api:startup\]/g, "\x1b[38;5;149m$&\x1b[0m"],
+  [/\[api:experiments\]/g, "\x1b[38;5;170m$&\x1b[0m"],
   [/\[api:logEvent\]/g, "\x1b[38;5;37m$&\x1b[0m"],
   [/\[logstream\]/g, "\x1b[38;5;245m$&\x1b[0m"],
 ];
@@ -599,14 +672,20 @@ function CoachTip({
   placement,
   onClose,
   children,
+  style,
 }: {
   n: number;
-  placement?: "left" | "above" | "corner" | "corner-left" | "corner-up-right";
+  placement?: "left" | "above" | "corner" | "corner-left" | "corner-up-right" | "input-fixed";
   onClose: () => void;
   children: ReactNode;
+  style?: CSSProperties;
 }) {
   return (
-    <div className={placement ? `coach-tip coach-tip-${placement}` : "coach-tip"} role="status">
+    <div
+      className={placement ? `coach-tip coach-tip-${placement}` : "coach-tip"}
+      role="status"
+      style={style}
+    >
       <span className="toast-badge">
         Tour · {n}/{TOUR_TIPS}
       </span>
@@ -712,131 +791,6 @@ function EntryModal({
   );
 }
 
-// About overlay — opened from the title-bar pill. The project blurb + the Phase 1 / Phase 2
-// panels that used to live in the welcome modal.
-function AboutModal({ onDismiss }: { onDismiss: () => void }) {
-  const titleId = useId();
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onDismiss();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onDismiss]);
-
-  return (
-    <div className="modal-backdrop" onClick={onDismiss}>
-      <div
-        className="modal about-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 id={titleId}>About this project</h3>
-        <p>
-          A working, full-stack A/B experimentation platform, built to mirror a production stack:
-          Next.js + Redux on the frontend, a GraphQL/Prisma API over Postgres, MongoDB, and Redis, a
-          Python significance service, all on Kubernetes (k3s) behind Caddy on AWS. It came together
-          as a pair-programming exercise with Claude — the four phases below trace how it was built,
-          and how my role evolved from observer to collaborator.
-        </p>
-        <PhasePanels />
-        <div className="modal-actions">
-          <button className="primary" autoFocus onClick={onDismiss}>
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// The Phase 0 → 2 story cards, shown in the About overlay — the human/AI collaboration arc, in
-// the builder's own voice.
-function PhasePanels() {
-  return (
-    <div className="phase-cards">
-      <section className="phase-card done">
-        <h4>Phase 0 — The Big Bang</h4>
-        <div className="phase-status">✓ Complete</div>
-        <p>
-          The initial big bang: I handed Claude the spec and it stood up the entire stack and a
-          minimalist frontend in one shot. That first UI was sparse and unintuitive — just the
-          Simulate / Create&nbsp;Users card with no error checking, a slimmer variant-stats table,
-          and only one button in the whole app: <strong>Create User</strong>.
-        </p>
-      </section>
-
-      <section className="phase-card done">
-        <h4>Phase 1 — The Micro-Manager</h4>
-        <div className="phase-status">✓ Complete</div>
-        <p>
-          I shifted from learner and observer to micro-manager of our pair-programming exercise —
-          owning the code and the UX, iterating in small steps, asking questions and making updates
-          until I understood the whole stack, and steadily guiding Claude toward a far more intuitive
-          user experience.
-        </p>
-        <div className="phase-stack">
-          <code>Next.js · Redux</code>
-          <code>GraphQL · Prisma</code>
-          <code>Postgres</code>
-          <code>MongoDB</code>
-          <code>Redis</code>
-          <code>Python/FastAPI</code>
-          <code>k3s</code>
-          <code>AWS</code>
-          <code>EC2</code>
-          <code>S3</code>
-          <code>CloudFront</code>
-        </div>
-      </section>
-
-      <section className="phase-card done">
-        <h4>Phase 2 — Full Collaboration</h4>
-        <div className="phase-status">✓ Live — you&apos;re using it now</div>
-        <p>
-          A true collaboration between Claude and me: we worked together to get Kubernetes running
-          quickly and smoothly, with a <strong>FIFO queue</strong> that lines up waiting visitors and
-          hands each one an isolated namespace session the moment a slot frees. We developed the new
-          Phase 2 stack on a parallel AWS dev environment, then cut production over by swapping the
-          Elastic IP onto the Kubernetes box (same IP, zero DNS wait).
-        </p>
-        <div className="phase-stack">
-          <code>Namespace per session</code>
-          <code>FIFO queue + warm pool</code>
-          <code>ResourceQuota</code>
-          <code>NetworkPolicy</code>
-          <code>Provisioner API</code>
-          <code>k3s</code>
-        </div>
-      </section>
-
-      <section className="phase-card done">
-        <h4>Phase 3 — Claude in the Product</h4>
-        <div className="phase-status">✓ Live — try the ✳ Claude panel</div>
-        <p>
-          Having built the platform <strong>with</strong> Claude, this phase puts Claude{" "}
-          <strong>inside</strong> it: an <strong>Ask Claude</strong> advisor that reasons over the
-          selected experiment&apos;s variants, buckets, and live stats and gives an honest read on
-          whether it&apos;s safe to launch — it never claims significance the numbers don&apos;t
-          support. A shared, stateless FastAPI + LangGraph agent calls Amazon Bedrock (Claude Haiku)
-          through the EC2 instance role via IMDS — <strong>no API key, data stays in AWS</strong> —
-          and streams the answer to the browser with the Vercel AI SDK.
-        </p>
-        <div className="phase-stack">
-          <code>LangChain</code>
-          <code>LangGraph</code>
-          <code>Amazon Bedrock</code>
-          <code>Claude Haiku</code>
-          <code>Vercel AI SDK</code>
-          <code>FastAPI</code>
-          <code>IAM instance role · IMDS</code>
-        </div>
-      </section>
-    </div>
-  );
-}
 
 // Tour completion dialog — same welcome-modal chrome (logo on top, button-only), shown
 // when the tour ends back on the Backend log stream.
@@ -934,7 +888,7 @@ function BackendLogs({
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const readyRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewRef = useRef<HTMLPreElement | null>(null);
-  const prevTourStep = useRef(tourStep); // to detect the finale modal closing (12 → 0)
+  const prevTourStep = useRef(tourStep); // to detect the finale modal closing (14 → 0)
 
   // Drop the spinner: the api announced itself, or we gave up waiting.
   const clearBusy = () => {
@@ -991,13 +945,13 @@ function BackendLogs({
 
   // Tour finale: land on the Logging sub-tab so the completion modal reveals the live stream.
   useEffect(() => {
-    if (tourStep === 12) setSubTab("logging");
+    if (tourStep === 14) setSubTab("logging");
   }, [tourStep]);
 
   // Tour finale: when "End tour" closes the modal (12 → 0), wait for the revealed log to
   // render, then a beat (500ms), then scroll to the newest lines.
   useEffect(() => {
-    const wasFinale = prevTourStep.current === 12;
+    const wasFinale = prevTourStep.current === 14;
     prevTourStep.current = tourStep;
     if (!wasFinale || tourStep !== 0) return;
     let timer: ReturnType<typeof setTimeout>;
@@ -1181,7 +1135,7 @@ function BackendLogs({
               Stream backend logs
             </button>
             {tourStep === 1 && (
-              <CoachTip n={1} onClose={() => setTourStep(0)}>
+              <CoachTip n={1} placement="corner-up-right" onClose={() => setTourStep(0)}>
                 Let&apos;s boot a fresh backend and watch it come up live. Click{" "}
                 <strong>Stream backend logs</strong>.
               </CoachTip>
@@ -1352,9 +1306,13 @@ function renderMd(text: string): ReactNode[] {
 function AdvisorPanel({
   selectedKey,
   onClose,
+  tourStep,
+  setTourStep,
 }: {
   selectedKey: string | null;
   onClose: () => void;
+  tourStep: number;
+  setTourStep: (n: number) => void;
 }) {
   const experiment = useAppSelector(
     (s) => s.experiments.items.find((e) => e.key === selectedKey) ?? null,
@@ -1366,7 +1324,7 @@ function AdvisorPanel({
     selectedKey ? s.experiments.significanceByKey[selectedKey] : undefined,
   );
 
-  const { messages, input, handleInputChange, handleSubmit, status } = useChat({
+  const { messages, input, setInput, handleInputChange, handleSubmit, status } = useChat({
     api: agentChatUrl(),
     streamProtocol: "text",
   });
@@ -1392,6 +1350,73 @@ function AdvisorPanel({
       ta.style.height = `${ta.scrollHeight}px`;
     }
   }, [input]);
+
+  // Tour step 10 (the ask-input tip): after a short beat, type a sample question one character at
+  // a time, as if the visitor were typing it — then they click Ask themselves. setInput is read
+  // through a ref so a new identity each render can't restart the typewriter mid-word.
+  const setInputRef = useRef(setInput);
+  setInputRef.current = setInput;
+  const autoTypedRef = useRef(false);
+  useEffect(() => {
+    if (tourStep !== 11 || autoTypedRef.current) return;
+    autoTypedRef.current = true;
+    const text = "Is this experiment ready for production?";
+    let i = 0;
+    let typer: ReturnType<typeof setInterval> | undefined;
+    const start = setTimeout(() => {
+      typer = setInterval(() => {
+        i += 1;
+        setInputRef.current(text.slice(0, i));
+        if (i >= text.length && typer) clearInterval(typer);
+      }, 45);
+    }, 500);
+    return () => {
+      clearTimeout(start);
+      if (typer) clearInterval(typer);
+    };
+  }, [tourStep]);
+
+  // Tour: once the visitor sends the question and Claude finishes answering (an assistant message
+  // exists and the stream has settled), wait 3s so they can read the reply, then reveal the final
+  // Launch tip.
+  useEffect(() => {
+    if (
+      tourStep === 11 &&
+      status === "ready" &&
+      messages.some((m) => m.role === "assistant")
+    ) {
+      const t = setTimeout(() => setTourStep(12), 3000);
+      return () => clearTimeout(t);
+    }
+  }, [tourStep, status, messages, setTourStep]);
+
+  // Tour: dismiss the ask-input tip the instant they click Ask (don't wait for Claude to finish).
+  const [asked, setAsked] = useState(false);
+
+  // Tour: pin the ask-input tip to the textarea's upper-left corner. The pane is a draggable width
+  // and clips its overflow, so the tip is position:fixed (escaping the clip) and its bottom-right
+  // is anchored just off the input's top-left via measured viewport offsets. Re-measure as the
+  // textarea grows (auto-type) or the window resizes.
+  const [tipPos, setTipPos] = useState<{ right: number; bottom: number } | null>(null);
+  useEffect(() => {
+    if (tourStep !== 11) {
+      setTipPos(null);
+      return;
+    }
+    const measure = () => {
+      const ta = taRef.current;
+      if (!ta) return;
+      const r = ta.getBoundingClientRect();
+      setTipPos({ right: window.innerWidth - r.left + 8, bottom: window.innerHeight - r.top + 8 });
+    };
+    measure();
+    const t = setTimeout(measure, 220); // after the pane's open/width transition settles
+    window.addEventListener("resize", measure);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("resize", measure);
+    };
+  }, [tourStep, input, messages]);
 
   if (!experiment) return null;
   const busy = status === "submitted" || status === "streaming";
@@ -1430,26 +1455,51 @@ function AdvisorPanel({
           </div>
         )}
       </div>
-      <form className="advisor-form" onSubmit={(e) => handleSubmit(e, { body: { context } })}>
-        <textarea
-          value={input}
-          onChange={handleInputChange}
-          onKeyDown={(e) => {
-            // Enter sends; Shift+Enter inserts a newline.
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              if (input.trim() && !busy) handleSubmit(e, { body: { context } });
-            }
+      <div className="tour-anchor advisor-form-anchor">
+        <form
+          className="advisor-form"
+          onSubmit={(e) => {
+            if (tourStep === 11) setAsked(true); // tour: drop the tip the moment they send
+            handleSubmit(e, { body: { context } });
           }}
-          ref={taRef}
-          placeholder="Should I launch to production?"
-          rows={1}
-          disabled={busy}
-        />
-        <button type="submit" className="primary" disabled={busy || !input.trim()}>
-          Ask
-        </button>
-      </form>
+        >
+          <textarea
+            value={input}
+            onChange={handleInputChange}
+            onKeyDown={(e) => {
+              // Enter sends; Shift+Enter inserts a newline.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                if (input.trim() && !busy) {
+                  if (tourStep === 11) setAsked(true);
+                  handleSubmit(e, { body: { context } });
+                }
+              }
+            }}
+            ref={taRef}
+            placeholder="Should I launch to production?"
+            rows={1}
+            disabled={busy}
+          />
+          <button type="submit" className="primary" disabled={busy || !input.trim()}>
+            Ask
+          </button>
+        </form>
+        {tourStep === 11 && !asked && (
+          <CoachTip
+            n={10}
+            placement="input-fixed"
+            onClose={() => setTourStep(0)}
+            style={
+              tipPos
+                ? { right: tipPos.right, bottom: tipPos.bottom, left: "auto", top: "auto" }
+                : undefined
+            }
+          >
+            Ask any question you want, then click <strong>Ask</strong>.
+          </CoachTip>
+        )}
+      </div>
     </div>
   );
 }
@@ -1604,14 +1654,15 @@ function ResultsCard(props: {
             title={users.length === 0 ? "Enroll at least one user before launching" : undefined}
             onClick={() => {
               dispatch(setStatus({ key: experiment.key, status: "RUNNING" }));
-              if (props.tourStep === 10) props.setTourStep(11); // tour: on to the finale
+              if (props.tourStep === 12) props.setTourStep(13); // tour: on to the finale
             }}
           >
             🚀 Launch to production
           </button>
-          {props.tourStep === 10 && (
-            <CoachTip n={9} onClose={() => props.setTourStep(0)}>
-              Ship it — <strong>Launch to production</strong> and watch the experiment go live.
+          {props.tourStep === 12 && (
+            <CoachTip n={11} onClose={() => props.setTourStep(0)}>
+              After you and Claude decide the experiment&apos;s ready, ship it —{" "}
+              <strong>Launch to production</strong> and watch it go (mock) live.
             </CoachTip>
           )}
         </span>
@@ -1720,8 +1771,8 @@ function AssignCard(props: {
           </button>
           {props.tourStep === 5 && (
             <CoachTip n={4} placement="corner-left" onClose={() => props.setTourStep(0)}>
-              <strong>Create a user</strong> — they&apos;re hashed into a variant bucket and stick
-              there on every future visit.
+              <strong>Create a user</strong> — they&apos;re placed into variant buckets based
+              what variant option the user selects.
             </CoachTip>
           )}
         </span>
@@ -1812,7 +1863,7 @@ function UserBoard(props: {
           </button>
           {props.tourStep === 6 && (
             <CoachTip n={5} placement="corner-up-right" onClose={() => props.setTourStep(0)}>
-              Fill both buckets fast — <strong>Seed 5 per variant</strong>.
+              Add more seeds to feed the experiment more users. — Click the <strong>Seed 5 per variant</strong> button.
             </CoachTip>
           )}
         </span>
@@ -1845,14 +1896,14 @@ function UserBoard(props: {
                 let tipPlacement: "left" | "corner-up-right" = "left";
                 if (colIndex === 0 && rowIndex === 0) {
                   tipStep = 7;
-                  tipText = "Log a conversion — a real success event from this customer.";
+                  tipText = "Mimic a success event from this customer.";
                   tipPlacement = "corner-up-right";
                 } else if (colIndex === 1 && rowIndex === 0) {
                   tipStep = 8;
-                  tipText = "Log one in the other variant so both have wins.";
+                  tipText = "Mimic a success in the other variant so both have wins.";
                 } else if (colIndex === 1 && rowIndex === 1) {
                   tipStep = 9;
-                  tipText = "One more — enough signal to compare the variants.";
+                  tipText = "Add one more success in this bucket to build enough signal to compare the variants in the statistics table.";
                 }
                 const showTip = tipStep !== 0 && props.tourStep === tipStep;
                 return (

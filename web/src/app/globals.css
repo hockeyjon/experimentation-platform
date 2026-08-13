@@ -83,6 +83,9 @@ a { color: var(--accent); }
 .tabbar .claude-tab:hover { border-color: var(--accent); color: var(--text); }
 .tabbar .claude-tab.active { border-color: var(--accent); color: var(--accent); background: rgba(79, 140, 255, .12); }
 .claude-glyph { color: #d97757; font-size: 13px; line-height: 1; }
+/* When the Claude pill is wrapped in a tour anchor (for the guided-tour tip), keep it centered in
+   the tab bar just like the bare pill was. */
+.tabbar .claude-tab-anchor { align-self: center; }
 
 /* content sits below header (61px) + tabbar (41px) = 102px */
 /* Frontend view: experiment pane (left, width set inline as a %) + draggable divider + Claude
@@ -172,7 +175,20 @@ a { color: var(--accent); }
 .entry-loading { display: flex; justify-content: center; padding: 28px 0 20px; }
 
 /* About overlay — the phase cards stack as a single narrative column (the Phase 0 → 2 story). */
-.about-modal { width: min(680px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; }
+.about-modal {
+  width: min(680px, 100%); max-height: calc(100vh - 48px);
+  /* Always show the scrollbar and open at the top (the Close button no longer autofocuses). We
+     force a classic, always-visible scrollbar via ::-webkit-scrollbar ONLY, and deliberately do
+     NOT set the standard scrollbar-width/scrollbar-color: in Chrome 121+ those take precedence over
+     ::-webkit-scrollbar and re-enable the macOS auto-hiding overlay — the exact bug we're fixing. */
+  overflow-y: scroll;
+}
+.about-modal::-webkit-scrollbar { width: 14px; -webkit-appearance: none; appearance: none; }
+.about-modal::-webkit-scrollbar-track { background: var(--panel-2); border-radius: 0 12px 12px 0; }
+.about-modal::-webkit-scrollbar-thumb {
+  background: var(--muted); border-radius: 8px; border: 3px solid var(--panel-2);
+}
+.about-modal::-webkit-scrollbar-thumb:hover { background: var(--text); }
 .about-modal .phase-cards { grid-template-columns: 1fr; }
 
 /* Phase panels — the Phase 1 / Phase 2 cards shown in the About overlay (distinct class names
@@ -191,6 +207,70 @@ a { color: var(--accent); }
   background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
   padding: 1px 6px; margin: 2px 4px 0 0; display: inline-block; font-size: 11.5px; color: var(--text);
 }
+
+/* About → Stack: the architecture diagram. Nested boxes trace one request from the browser (top)
+   down to Bedrock (bottom); the AWS boundary wraps everything that runs in-cloud. */
+.about-stack-modal { width: min(720px, 100%); }
+.stack-diagram { margin-top: 20px; text-align: left; display: flex; flex-direction: column; gap: 8px; }
+.stack-node {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+}
+.stack-label {
+  display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); margin-bottom: 3px;
+}
+.stack-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.stack-note { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.stack-flow { text-align: center; font-size: 11px; color: var(--muted); letter-spacing: .04em; padding: 1px 0; }
+.stack-diagram .phase-stack { margin-top: 6px; }
+
+/* AWS boundary — orange border + badge straddling the top edge. */
+.stack-aws {
+  position: relative; margin-top: 8px;
+  border: 1.5px solid #ff9900; border-radius: 12px; background: rgba(255, 153, 0, 0.04);
+  padding: 26px 12px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.stack-aws-badge {
+  position: absolute; top: 0; left: 14px; transform: translateY(-50%);
+  background: #ff9900; color: #1a1207; font-weight: 700; font-size: 11px; letter-spacing: .08em;
+  padding: 2px 10px; border-radius: 999px;
+}
+
+/* Frontend boundary — same shape as the AWS boundary, in blue. */
+.stack-frontend {
+  position: relative;
+  border: 1.5px solid var(--accent); border-radius: 12px; background: rgba(79, 140, 255, 0.05);
+  padding: 26px 12px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.stack-frontend-badge {
+  position: absolute; top: 0; left: 14px; transform: translateY(-50%);
+  background: var(--accent); color: #fff; font-weight: 700; font-size: 11px; letter-spacing: .08em;
+  padding: 2px 10px; border-radius: 999px;
+}
+
+/* Nested groups: EC2 → k3s → per-session namespace. Label straddles the group's top-left. */
+.stack-group {
+  position: relative; border: 1px solid var(--border); border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+  padding: 24px 10px 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.stack-group-label {
+  position: absolute; top: 7px; left: 12px;
+  font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+}
+/* Blue (k3s) border — the k3s group plus the edge-proxy, services and datastores cards. */
+.stack-k3s,
+.stack-caddy,
+.stack-services,
+.stack-datastores { border-color: rgba(79, 140, 255, 0.55); }
+/* Clay (shared-advisor) border — the advisor plus delivery, EC2, control-plane and session. */
+.stack-agent,
+.stack-edge,
+.stack-ec2,
+.stack-provisioner,
+.stack-session { border-color: rgba(217, 119, 87, 0.45); }
+.stack-session { border-style: solid; } /* match the advisor card (was dashed green) */
+.stack-bedrock { border-color: rgba(217, 119, 87, 0.65); }
 /* Tour completion: the celebration emoji on its own line at 2× the message text (scoped
    under .welcome-modal to outrank `.welcome-modal p`), and it pops — enlarges — on appear. */
 .welcome-modal .tour-done-emoji {
@@ -256,6 +336,15 @@ a { color: var(--accent); }
   right: auto; left: 100%; border-right-color: transparent;
   border-left-color: var(--arrow-fill); margin-right: 0; margin-left: -1px;
 }
+/* Variant: the Ask-input tip. The Claude pane clips its overflow, so an anchor-relative tip would
+   be cut off — this one is FIXED to the viewport (escaping the clip) and floats just above the ask
+   box at the pane's lower-right, on top of everything. No arrow (it hovers right over the box). */
+.coach-tip-input-fixed {
+  position: fixed; left: auto; top: auto; right: 28px; bottom: 96px;
+  transform: none; z-index: 70;
+  width: 320px; max-width: calc(100vw - 48px);
+}
+.coach-tip-input-fixed::before, .coach-tip-input-fixed::after { display: none; }
 /* Variant: tip sits ABOVE its anchor and points DOWN — for buttons at the panel's left
    edge, where a left-placed tip would be clipped by the scrolling main column. */
 .coach-tip-above {
@@ -525,6 +614,9 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 .advisor-msg.assistant { background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
   align-self: flex-start; max-width: 97%; }
 .advisor-msg.assistant strong { color: #fff; font-weight: 700; }
+/* Wraps the ask form so the guided-tour tip can anchor to it; overrides .tour-anchor's inline-flex
+   so the form still spans the pane. */
+.advisor-form-anchor { display: block; width: 100%; }
 .advisor-form { display: flex; gap: 6px; align-items: flex-end; }
 /* Auto-growing textarea (height set from scrollHeight in JS) so the whole question is always
    visible — no scrollbar, no cap, wraps as it grows. */

@@ -137,7 +137,8 @@ local-web: ## Run the Next.js dev server against the local stack (hot reload)
 		echo "              make local-web WEB_PORT=3001   (use another port)"; \
 		exit 1; \
 	fi; \
-	cd web && NEXT_PUBLIC_GRAPHQL_URL=http://localhost:$(LOCAL_PORT)/ npx next dev -p $(WEB_PORT)
+	cd web && NEXT_PUBLIC_GRAPHQL_URL=http://localhost:$(LOCAL_PORT)/ NEXT_PUBLIC_SESSION_MODE=shared \
+		npx next dev -p $(WEB_PORT)
 
 # One command to get back to a known-good localhost:$(WEB_PORT): stop the dev server (which
 # local-down can't, being a host process), replace the stack, wait for the api to actually
