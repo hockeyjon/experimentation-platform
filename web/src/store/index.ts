@@ -2,9 +2,10 @@
 import { configureStore } from "@reduxjs/toolkit";
 import { useDispatch, useSelector, TypedUseSelectorHook } from "react-redux";
 import experiments, { AssignedUser } from "./experimentsSlice";
+import ui from "./uiSlice";
 
 export const store = configureStore({
-  reducer: { experiments },
+  reducer: { experiments, ui },
 });
 
 // --- persist the enrolled-user board across reloads (localStorage) ---

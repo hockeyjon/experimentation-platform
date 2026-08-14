@@ -32,6 +32,10 @@ export const httpBase = () => `${ORIGIN}${prefix()}`;
 // ws(s) base for the log-stream socket: http→ws, https→wss.
 export const wsBase = () => httpBase().replace(/^http/, "ws");
 
+// The Phase 3 advisor endpoint — shared origin, NOT session-scoped (like /provision/*). The
+// browser sends the on-screen experiment data in the body; CORS is gated on Origin, no token.
+export const agentChatUrl = () => `${ORIGIN}/agent/chat`;
+
 // A provisioner URL with the bundle token appended. Always the shared origin (not session-scoped).
 const provisionUrl = (path: string) => {
   const sep = path.includes("?") ? "&" : "?";

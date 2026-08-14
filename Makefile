@@ -28,8 +28,8 @@ COMPOSE          := docker compose -f docker-compose.prod.yml
 # --- dev environment (Phase 2 blue-green: devexperimentation + api-dev, own bucket + CDN) ---
 DEV_API_URL          ?= https://api-dev.gunbarrelstudio.com/
 DEV_BUCKET           ?= gunbarrelstudio-experimentation-web-dev
-DEV_DISTRIBUTION_ID  ?= E25MYRGN4D1A30
-DEV_EC2_HOST         ?= 3.132.245.212
+DEV_DISTRIBUTION_ID  ?= E36SSW09AANORI
+DEV_EC2_HOST         ?= 3.144.147.84
 LOCAL_PORT       ?= 8080
 WEB_PORT         ?= 3000
 # WEB_ORIGIN must follow WEB_PORT: it becomes logstream's ALLOWED_ORIGIN, so a dev server
@@ -137,7 +137,8 @@ local-web: ## Run the Next.js dev server against the local stack (hot reload)
 		echo "              make local-web WEB_PORT=3001   (use another port)"; \
 		exit 1; \
 	fi; \
-	cd web && NEXT_PUBLIC_GRAPHQL_URL=http://localhost:$(LOCAL_PORT)/ npx next dev -p $(WEB_PORT)
+	cd web && NEXT_PUBLIC_GRAPHQL_URL=http://localhost:$(LOCAL_PORT)/ NEXT_PUBLIC_SESSION_MODE=shared \
+		npx next dev -p $(WEB_PORT)
 
 # One command to get back to a known-good localhost:$(WEB_PORT): stop the dev server (which
 # local-down can't, being a host process), replace the stack, wait for the api to actually

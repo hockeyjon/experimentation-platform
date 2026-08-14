@@ -10,11 +10,22 @@
 # Model (path-based, no DNS/cert changes): api.gunbarrelstudio.com/s/<id>/… → that session's
 # services, by in-cluster DNS (api.session-<id>.svc.cluster.local). Caddy strips the /s/<id>
 # prefix so each backend sees its normal paths. The provisioner control API lives at /provision.
-api.gunbarrelstudio.com {
+#
+# Both hostnames share this one site block: the prod box answers on api.* (the dev cert is unused
+# there) and the dev box answers on api-dev.* — one Caddyfile, correct on either box.
+api.gunbarrelstudio.com, api-dev.gunbarrelstudio.com {
 	# Provisioner: create / poll / heartbeat / delete sessions (browser → provisioner Service).
 	handle /provision* {
 		uri strip_prefix /provision
 		reverse_proxy provisioner:8090
+	}
+
+	# Phase 3 advisor (shared, not session-scoped): /agent/chat streams a Claude answer. No prefix
+	# strip — the app owns /agent/*. flush_interval -1 pushes tokens through immediately (no buffering).
+	handle /agent* {
+		reverse_proxy agent:8000 {
+			flush_interval -1
+		}
 	}
 
 	# A session's log stream: /s/<id>/logstream… → logstream in namespace session-<id>.

@@ -27,7 +27,7 @@ body {
 a { color: var(--accent); }
 
 .header {
-  padding: 20px 28px;
+  padding: 20px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: baseline;
@@ -38,9 +38,9 @@ a { color: var(--accent); }
   font-size: 12px; color: var(--muted);
   border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
 }
-/* About pill — pushed to the far right of the title bar; opens the About overlay. */
+/* About pill — sits right after the stack tag; opens the About overlay. */
 .header .about-pill {
-  margin-left: auto; align-self: center;
+  align-self: center;
   font-size: 12px; font-weight: 600; cursor: pointer;
   color: #fff; background: transparent;
   border: 1px solid var(--accent); border-radius: 999px; padding: 4px 16px;
@@ -61,9 +61,50 @@ a { color: var(--accent); }
 }
 .tabbar .tab:hover { color: var(--text); }
 .tabbar .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+/* Experiment picker in the tab bar. Two flex spacers set the gap on each side in a 1:3 ratio, so
+   the picker lands a quarter of the way across the free space — halfway between dead-center and
+   flush against the Backend tab. The right spacer also parks the Claude pill hard right. */
+.tabbar .tab-gap { min-width: 0; }
+.tabbar .tab-gap-l { flex: 1 1 0; }
+.tabbar .tab-gap-r { flex: 3 1 0; }
+.tabbar .tab-picker { align-self: center; display: flex; align-items: center; gap: 8px;
+  min-width: 0; flex: none; }
+.tabbar .tab-picker label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); }
+.tabbar .tab-picker select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 5px 10px; font-size: 13px; min-width: 200px; max-width: 40vw; cursor: pointer; }
+.tabbar .tab-picker select:focus { outline: none; border-color: var(--accent); }
+.tabbar .tab-picker .error { max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Claude toggle — a pill at the far right of the tab bar; opens the Claude pane. */
+.tabbar .claude-tab { align-self: center; display: inline-flex; align-items: center;
+  gap: 6px; cursor: pointer; background: transparent; border: 1px solid var(--border);
+  border-radius: 999px; padding: 4px 13px; color: var(--muted); font-size: 13px; }
+.tabbar .claude-tab:hover { border-color: var(--accent); color: var(--text); }
+.tabbar .claude-tab.active { border-color: var(--accent); color: var(--accent); background: rgba(79, 140, 255, .12); }
+.claude-glyph { color: #d97757; font-size: 13px; line-height: 1; }
+/* When the Claude pill is wrapped in a tour anchor (for the guided-tour tip), keep it centered in
+   the tab bar just like the bare pill was. */
+.tabbar .claude-tab-anchor { align-self: center; }
 
 /* content sits below header (61px) + tabbar (41px) = 102px */
-.layout { display: grid; grid-template-columns: 280px 1fr; gap: 0; height: calc(100vh - 102px); overflow: hidden; }
+/* Frontend view: experiment pane (left, width set inline as a %) + draggable divider + Claude
+   pane (right, takes the rest). The divider's mousedown handler adjusts the split. */
+.split { display: flex; height: calc(100vh - 102px); overflow: hidden; }
+.exp-pane { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.exp-cards { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 16px 16px; display: flex;
+  flex-direction: column; gap: 16px; }
+/* Cards shrink with the pane when Claude opens; a wide stats table scrolls inside its own card
+   rather than forcing the whole pane wider. */
+.exp-cards > * { min-width: 0; max-width: 100%; }
+.table-wrap { overflow-x: auto; }
+.split-divider { flex: none; width: 6px; cursor: col-resize; background: var(--border); transition: background .12s; }
+.split-divider:hover { background: var(--accent); }
+/* Collapsed to width 0 by default (no padding/border → fully hidden); opens to the inline width %
+   from the tab-bar Claude button. Kept mounted so the conversation survives collapse/expand. */
+.claude-pane { flex: 0 0 auto; box-sizing: border-box; min-width: 0; display: flex;
+  flex-direction: column; overflow: hidden; transition: width .18s ease; }
+.claude-pane.open { padding: 16px 14px; border-left: 1px solid var(--border); }
 
 /* Backend tab: streaming log viewer. */
 .backend-logs {
@@ -134,7 +175,20 @@ a { color: var(--accent); }
 .entry-loading { display: flex; justify-content: center; padding: 28px 0 20px; }
 
 /* About overlay — the phase cards stack as a single narrative column (the Phase 0 → 2 story). */
-.about-modal { width: min(680px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; }
+.about-modal {
+  width: min(680px, 100%); max-height: calc(100vh - 48px);
+  /* Always show the scrollbar and open at the top (the Close button no longer autofocuses). We
+     force a classic, always-visible scrollbar via ::-webkit-scrollbar ONLY, and deliberately do
+     NOT set the standard scrollbar-width/scrollbar-color: in Chrome 121+ those take precedence over
+     ::-webkit-scrollbar and re-enable the macOS auto-hiding overlay — the exact bug we're fixing. */
+  overflow-y: scroll;
+}
+.about-modal::-webkit-scrollbar { width: 14px; -webkit-appearance: none; appearance: none; }
+.about-modal::-webkit-scrollbar-track { background: var(--panel-2); border-radius: 0 12px 12px 0; }
+.about-modal::-webkit-scrollbar-thumb {
+  background: var(--muted); border-radius: 8px; border: 3px solid var(--panel-2);
+}
+.about-modal::-webkit-scrollbar-thumb:hover { background: var(--text); }
 .about-modal .phase-cards { grid-template-columns: 1fr; }
 
 /* Phase panels — the Phase 1 / Phase 2 cards shown in the About overlay (distinct class names
@@ -153,6 +207,70 @@ a { color: var(--accent); }
   background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
   padding: 1px 6px; margin: 2px 4px 0 0; display: inline-block; font-size: 11.5px; color: var(--text);
 }
+
+/* About → Stack: the architecture diagram. Nested boxes trace one request from the browser (top)
+   down to Bedrock (bottom); the AWS boundary wraps everything that runs in-cloud. */
+.about-stack-modal { width: min(720px, 100%); }
+.stack-diagram { margin-top: 20px; text-align: left; display: flex; flex-direction: column; gap: 8px; }
+.stack-node {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+}
+.stack-label {
+  display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); margin-bottom: 3px;
+}
+.stack-title { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.stack-note { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.stack-flow { text-align: center; font-size: 11px; color: var(--muted); letter-spacing: .04em; padding: 1px 0; }
+.stack-diagram .phase-stack { margin-top: 6px; }
+
+/* AWS boundary — orange border + badge straddling the top edge. */
+.stack-aws {
+  position: relative; margin-top: 8px;
+  border: 1.5px solid #ff9900; border-radius: 12px; background: rgba(255, 153, 0, 0.04);
+  padding: 26px 12px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.stack-aws-badge {
+  position: absolute; top: 0; left: 14px; transform: translateY(-50%);
+  background: #ff9900; color: #1a1207; font-weight: 700; font-size: 11px; letter-spacing: .08em;
+  padding: 2px 10px; border-radius: 999px;
+}
+
+/* Frontend boundary — same shape as the AWS boundary, in blue. */
+.stack-frontend {
+  position: relative;
+  border: 1.5px solid var(--accent); border-radius: 12px; background: rgba(79, 140, 255, 0.05);
+  padding: 26px 12px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.stack-frontend-badge {
+  position: absolute; top: 0; left: 14px; transform: translateY(-50%);
+  background: var(--accent); color: #fff; font-weight: 700; font-size: 11px; letter-spacing: .08em;
+  padding: 2px 10px; border-radius: 999px;
+}
+
+/* Nested groups: EC2 → k3s → per-session namespace. Label straddles the group's top-left. */
+.stack-group {
+  position: relative; border: 1px solid var(--border); border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+  padding: 24px 10px 10px; display: flex; flex-direction: column; gap: 8px;
+}
+.stack-group-label {
+  position: absolute; top: 7px; left: 12px;
+  font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+}
+/* Blue (k3s) border — the k3s group plus the edge-proxy, services and datastores cards. */
+.stack-k3s,
+.stack-caddy,
+.stack-services,
+.stack-datastores { border-color: rgba(79, 140, 255, 0.55); }
+/* Clay (shared-advisor) border — the advisor plus delivery, EC2, control-plane and session. */
+.stack-agent,
+.stack-edge,
+.stack-ec2,
+.stack-provisioner,
+.stack-session { border-color: rgba(217, 119, 87, 0.45); }
+.stack-session { border-style: solid; } /* match the advisor card (was dashed green) */
+.stack-bedrock { border-color: rgba(217, 119, 87, 0.65); }
 /* Tour completion: the celebration emoji on its own line at 2× the message text (scoped
    under .welcome-modal to outrank `.welcome-modal p`), and it pops — enlarges — on appear. */
 .welcome-modal .tour-done-emoji {
@@ -175,6 +293,9 @@ a { color: var(--accent); }
 
 /* Guided-tour coach-mark: anchored to the RIGHT of its target button, pointing back at it. */
 .tour-anchor { position: relative; display: inline-flex; }
+/* The variant field is a tour anchor for the "select control" tip, but must stay a normal block
+   (not inline-flex) so its label-over-select layout is unchanged. */
+.tour-anchor.assign-variant-anchor { display: block; }
 .coach-tip {
   position: absolute; z-index: 40; left: calc(100% + 16px); top: 50%; transform: translateY(-50%);
   display: flex; align-items: flex-start; gap: 10px;
@@ -218,6 +339,15 @@ a { color: var(--accent); }
   right: auto; left: 100%; border-right-color: transparent;
   border-left-color: var(--arrow-fill); margin-right: 0; margin-left: -1px;
 }
+/* Variant: the Ask-input tip. The Claude pane clips its overflow, so an anchor-relative tip would
+   be cut off — this one is FIXED to the viewport (escaping the clip) and floats just above the ask
+   box at the pane's lower-right, on top of everything. No arrow (it hovers right over the box). */
+.coach-tip-input-fixed {
+  position: fixed; left: auto; top: auto; right: 28px; bottom: 96px;
+  transform: none; z-index: 70;
+  width: 320px; max-width: calc(100vw - 48px);
+}
+.coach-tip-input-fixed::before, .coach-tip-input-fixed::after { display: none; }
 /* Variant: tip sits ABOVE its anchor and points DOWN — for buttons at the panel's left
    edge, where a left-placed tip would be clipped by the scrolling main column. */
 .coach-tip-above {
@@ -321,7 +451,11 @@ a { color: var(--accent); }
   white-space: pre-wrap; word-break: break-word;
 }
 
-.sidebar { border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; }
+/* The sidebar is a fixed-height flex column: the experiments list and the advisor SHARE the
+   vertical space. The list flexes (and scrolls) to give the advisor room; the "+" toggle lets the
+   advisor take most of the column, shrinking the list to a scroll strip. */
+.sidebar { border-right: 1px solid var(--border); padding: 16px; display: flex; flex-direction: column; overflow: hidden; }
+.sidebar-experiments { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-height: 96px; overflow-y: auto; }
 .sidebar h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
 
 .exp-item {
@@ -341,20 +475,27 @@ a { color: var(--accent); }
 
 .main { padding: 0 28px 24px; overflow-y: auto; }
 
-/* The statistics card sticks to the top of the scrolling main column; the enroll
-   and board panels scroll underneath it. z-index keeps it above scrolled content;
-   the shadow makes it read as floating. */
-.card.stats-sticky {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  margin-top: 0;
+/* The statistics card is a FIXED header above the scrolling enroll/board region — it has no
+   scrollbar of its own and nothing scrolls underneath it (it used to be position: sticky, which
+   let the cards bleed through). The shadow makes it read as floating over the scroll region. */
+.exp-header { flex: none; padding: 16px 16px 12px; }
+.exp-header .card {
+  margin-bottom: 0; min-width: 0; max-width: 100%;
   box-shadow: 0 8px 16px -8px rgba(0, 0, 0, 0.55);
 }
 .card {
+  position: relative;
   background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
   padding: 20px; margin-bottom: 20px;
 }
+/* Collapse chevron, top-right corner of a card. Toggles the card body; the title stays. */
+.card-toggle {
+  position: absolute; top: 14px; right: 14px; z-index: 2;
+  width: 26px; height: 26px; border-radius: 7px; cursor: pointer;
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  font-size: 15px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+}
+.card-toggle:hover { border-color: var(--accent); color: var(--accent); }
 .card h3 { margin: 0 0 4px; font-size: 16px; }
 .card .desc { color: var(--muted); margin: 0 0 16px; }
 
@@ -424,7 +565,7 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 .pill-slot .result-pill { margin-top: 0; }
 
 /* Card title row: name + status badge + info button inline */
-.card-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 4px; }
+.card-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 4px; padding-right: 32px; }
 
 /* Info button + click-toggle popover */
 .info-wrap { position: relative; display: inline-flex; }
@@ -452,6 +593,39 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 }
 .vtag-control { color: var(--accent); border-color: var(--accent); }
 .vtag-variant { color: var(--warn); border-color: var(--warn); }
+
+/* Phase 3 advisor — the right (Claude) pane: fills its pane as a flex column. */
+.advisor { display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; }
+.advisor-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.advisor h2 { font-size: 13px; margin: 0; line-height: 1.35; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--muted); white-space: nowrap; }
+.advisor-collapse { flex: none; width: 24px; height: 24px; border-radius: 6px; cursor: pointer;
+  background: transparent; border: 1px solid var(--border); color: var(--muted); font-size: 18px;
+  line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+.advisor-collapse:hover { border-color: var(--accent); color: var(--accent); }
+/* The log flexes to fill the pane, but its content is bottom-anchored: the ::before eats the
+   slack with margin-top:auto, so a short conversation sits at the bottom (last answer right above
+   the input) and, as it grows past the pane, the oldest messages spill off the top — scroll up to
+   read them. */
+.advisor-log { flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.advisor-log::before { content: ""; margin-top: auto; }
+.advisor-msg { font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; border-radius: 10px; padding: 8px 11px; }
+.advisor-msg.user { background: var(--accent); color: #fff; align-self: flex-end; max-width: 92%; }
+.advisor-msg.assistant { background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  align-self: flex-start; max-width: 97%; }
+.advisor-msg.assistant strong { color: #fff; font-weight: 700; }
+/* Wraps the ask form so the guided-tour tip can anchor to it; overrides .tour-anchor's inline-flex
+   so the form still spans the pane. */
+.advisor-form-anchor { display: block; width: 100%; }
+.advisor-form { display: flex; gap: 6px; align-items: flex-end; }
+/* Auto-growing textarea (height set from scrollHeight in JS) so the whole question is always
+   visible — no scrollbar, no cap, wraps as it grows. */
+.advisor-form textarea { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; color: var(--text); font: inherit; font-size: 12.5px;
+  line-height: 1.45; resize: none; overflow: hidden; min-height: 40px; }
+.advisor-form textarea:focus { outline: none; border-color: var(--accent); }
+.advisor-form button { padding: 8px 12px; font-size: 12px; white-space: nowrap; }
 
 /* action rows */
 .card-actions { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
