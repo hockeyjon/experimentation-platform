@@ -262,10 +262,10 @@ export default function Dashboard() {
   // Tour finale: after Launch, once the experiment reads RUNNING, pause the configured delay,
   // then jump back to the Backend log stream and show the completion modal.
   useEffect(() => {
-    if (tourStep === 13 && selected?.status === "RUNNING") {
+    if (tourStep === 14 && selected?.status === "RUNNING") {
       const t = setTimeout(() => {
         setTab("backend");
-        setTourStep(14);
+        setTourStep(15);
       }, TOUR_FINALE_DELAY_MS);
       return () => clearTimeout(t);
     }
@@ -286,7 +286,7 @@ export default function Dashboard() {
           }}
         />
       )}
-      {tourStep === 14 && <TourDoneModal onEnd={() => setTourStep(0)} />}
+      {tourStep === 15 && <TourDoneModal onEnd={() => setTourStep(0)} />}
       {about && <AboutStack onDismiss={() => setAbout(false)} />}
       {aboutClaude && <AboutClaude onDismiss={() => setAboutClaude(false)} />}
       {idleRemaining !== null && !sessionEnded && (
@@ -374,9 +374,9 @@ export default function Dashboard() {
             className={`claude-tab${claudeOpen ? " active" : ""}`}
             onClick={() => {
               setTab("frontend");
-              if (tourStep === 10) {
+              if (tourStep === 11) {
                 setClaudeOpen(true); // tour: open the pane and move to the ask-input tip
-                setTourStep(11);
+                setTourStep(12);
               } else {
                 setClaudeOpen((o) => !o);
               }
@@ -386,8 +386,8 @@ export default function Dashboard() {
           >
             <span className="claude-glyph" aria-hidden="true">✳</span> Claude
           </button>
-          {tourStep === 10 && (
-            <CoachTip n={9} placement="left" onClose={() => setTourStep(0)}>
+          {tourStep === 11 && (
+            <CoachTip n={10} placement="left" onClose={() => setTourStep(0)}>
               Let&apos;s have Claude analyze the current state of the experiment. Click the{" "}
               <strong>Claude</strong> button.
             </CoachTip>
@@ -503,7 +503,7 @@ const READY_TIMEOUT_S = 180;
 const TOUR_STEP_DELAY_MS = 1200;
 const TOUR_FINALE_DELAY_MS = 1800;
 // How many interactive tips the visitor clicks through (drives the "N/11" progress counter).
-const TOUR_TIPS = 11;
+const TOUR_TIPS = 12;
 
 // Ask the log-stream service to recreate api + stats before we attach — the `make
 // logs-reset` equivalent. Always resolves to a line for the log view: a failed or throttled
@@ -801,8 +801,8 @@ function TourDoneModal({ onEnd }: { onEnd: () => void }) {
       <div className="modal welcome-modal" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <img className="welcome-logo" src="/logo.png" alt="Experimentation Platform logo" />
         <h3 id={titleId}>You&apos;re all set</h3>
-        <p>Now you can watch the full data flow in the backend log stream. Happy experimenting!</p>
-        <p className="tour-done-emoji">🎉</p>
+        <p>Now you can view the full data flow in the backend log stream.</p>
+        <p>Click the <strong>Frontend</strong> tab in the upper left corner to to return to the experiment dashboard.</p>
         <div className="modal-actions welcome-actions">
           <button className="primary" autoFocus onClick={onEnd}>
             End tour
@@ -888,7 +888,7 @@ function BackendLogs({
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const readyRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewRef = useRef<HTMLPreElement | null>(null);
-  const prevTourStep = useRef(tourStep); // to detect the finale modal closing (14 → 0)
+  const prevTourStep = useRef(tourStep); // to detect the finale modal closing (15 → 0)
 
   // Drop the spinner: the api announced itself, or we gave up waiting.
   const clearBusy = () => {
@@ -945,13 +945,13 @@ function BackendLogs({
 
   // Tour finale: land on the Logging sub-tab so the completion modal reveals the live stream.
   useEffect(() => {
-    if (tourStep === 14) setSubTab("logging");
+    if (tourStep === 15) setSubTab("logging");
   }, [tourStep]);
 
   // Tour finale: when "End tour" closes the modal (12 → 0), wait for the revealed log to
   // render, then a beat (500ms), then scroll to the newest lines.
   useEffect(() => {
-    const wasFinale = prevTourStep.current === 14;
+    const wasFinale = prevTourStep.current === 15;
     prevTourStep.current = tourStep;
     if (!wasFinale || tourStep !== 0) return;
     let timer: ReturnType<typeof setTimeout>;
@@ -1358,7 +1358,7 @@ function AdvisorPanel({
   setInputRef.current = setInput;
   const autoTypedRef = useRef(false);
   useEffect(() => {
-    if (tourStep !== 11 || autoTypedRef.current) return;
+    if (tourStep !== 12 || autoTypedRef.current) return;
     autoTypedRef.current = true;
     const text = "Is this experiment ready for production?";
     let i = 0;
@@ -1381,11 +1381,11 @@ function AdvisorPanel({
   // Launch tip.
   useEffect(() => {
     if (
-      tourStep === 11 &&
+      tourStep === 12 &&
       status === "ready" &&
       messages.some((m) => m.role === "assistant")
     ) {
-      const t = setTimeout(() => setTourStep(12), 3000);
+      const t = setTimeout(() => setTourStep(13), 3000);
       return () => clearTimeout(t);
     }
   }, [tourStep, status, messages, setTourStep]);
@@ -1399,7 +1399,7 @@ function AdvisorPanel({
   // textarea grows (auto-type) or the window resizes.
   const [tipPos, setTipPos] = useState<{ right: number; bottom: number } | null>(null);
   useEffect(() => {
-    if (tourStep !== 11) {
+    if (tourStep !== 12) {
       setTipPos(null);
       return;
     }
@@ -1459,7 +1459,7 @@ function AdvisorPanel({
         <form
           className="advisor-form"
           onSubmit={(e) => {
-            if (tourStep === 11) setAsked(true); // tour: drop the tip the moment they send
+            if (tourStep === 12) setAsked(true); // tour: drop the tip the moment they send
             handleSubmit(e, { body: { context } });
           }}
         >
@@ -1471,7 +1471,7 @@ function AdvisorPanel({
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 if (input.trim() && !busy) {
-                  if (tourStep === 11) setAsked(true);
+                  if (tourStep === 12) setAsked(true);
                   handleSubmit(e, { body: { context } });
                 }
               }
@@ -1485,9 +1485,9 @@ function AdvisorPanel({
             Ask
           </button>
         </form>
-        {tourStep === 11 && !asked && (
+        {tourStep === 12 && !asked && (
           <CoachTip
-            n={10}
+            n={11}
             placement="input-fixed"
             onClose={() => setTourStep(0)}
             style={
@@ -1654,13 +1654,13 @@ function ResultsCard(props: {
             title={users.length === 0 ? "Enroll at least one user before launching" : undefined}
             onClick={() => {
               dispatch(setStatus({ key: experiment.key, status: "RUNNING" }));
-              if (props.tourStep === 12) props.setTourStep(13); // tour: on to the finale
+              if (props.tourStep === 13) props.setTourStep(14); // tour: on to the finale
             }}
           >
             🚀 Launch to production
           </button>
-          {props.tourStep === 12 && (
-            <CoachTip n={11} onClose={() => props.setTourStep(0)}>
+          {props.tourStep === 13 && (
+            <CoachTip n={12} onClose={() => props.setTourStep(0)}>
               After you and Claude decide the experiment&apos;s ready, ship it —{" "}
               <strong>Launch to production</strong> and watch it go (mock) live.
             </CoachTip>
@@ -1728,7 +1728,7 @@ function AssignCard(props: {
         assignUser({ key: props.experimentKey, userId, variantKey: variantKey || undefined }),
       ).unwrap();
       setPill({ userId: res.userId, variantKey: res.variantKey, cached: res.cached });
-      if (props.tourStep === 5) props.setTourStep(6); // tour: on to the Seed step
+      if (props.tourStep === 6) props.setTourStep(7); // tour: on to the Seed step
       if (!res.cached) {
         hideTimer.current = setTimeout(() => {
           setPill(null);
@@ -1754,9 +1754,17 @@ function AssignCard(props: {
           <label>Customer ID</label>
           <input value={userId} onChange={(e) => setUserId(e.target.value)} />
         </div>
-        <div>
+        <div className="tour-anchor assign-variant-anchor">
           <label>Variant</label>
-          <select value={variantKey} onChange={(e) => setVariantKey(e.target.value)}>
+          <select
+            value={variantKey}
+            onChange={(e) => {
+              setVariantKey(e.target.value);
+              // tour: selecting the control variant advances to the Create User tip
+              const controlKey = props.variants.find((v) => v.isControl)?.key;
+              if (props.tourStep === 5 && e.target.value === controlKey) props.setTourStep(6);
+            }}
+          >
             <option value="">Auto (deterministic)</option>
             {props.variants.map((v) => (
               <option key={v.key} value={v.key}>
@@ -1764,15 +1772,21 @@ function AssignCard(props: {
               </option>
             ))}
           </select>
+          {props.tourStep === 5 && (
+            <CoachTip n={4} placement="above" onClose={() => props.setTourStep(0)}>
+              Now let&apos;s create a user — they&apos;re placed into variant buckets based on what
+              variant option the user selects. Select the <strong>“control”</strong> variant in the
+              variant dropdown list.
+            </CoachTip>
+          )}
         </div>
         <span className="tour-anchor">
           <button className="primary" onClick={handleCreate}>
             Create User
           </button>
-          {props.tourStep === 5 && (
-            <CoachTip n={4} placement="corner-left" onClose={() => props.setTourStep(0)}>
-              <strong>Create a user</strong> — they&apos;re placed into variant buckets based
-              what variant option the user selects.
+          {props.tourStep === 6 && (
+            <CoachTip n={5} placement="corner-left" onClose={() => props.setTourStep(0)}>
+              Now click <strong>Create User</strong> to enroll them.
             </CoachTip>
           )}
         </span>
@@ -1817,9 +1831,9 @@ function UserBoard(props: {
   const boardRef = useRef<HTMLDivElement | null>(null);
   const [collapsed, setCollapsed] = useState(false);
 
-  // Tour step 6: bring the whole Enrolled Customers panel into view.
+  // Tour: bring the whole Enrolled Customers panel into view for the Seed step.
   useEffect(() => {
-    if (props.tourStep === 6) {
+    if (props.tourStep === 7) {
       boardRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
   }, [props.tourStep]);
@@ -1856,13 +1870,13 @@ function UserBoard(props: {
             className="primary"
             onClick={() => {
               seed();
-              if (props.tourStep === 6) props.setTourStep(7); // tour: on to the first success
+              if (props.tourStep === 7) props.setTourStep(8); // tour: on to the first success
             }}
           >
             Seed 5 per variant
           </button>
-          {props.tourStep === 6 && (
-            <CoachTip n={5} placement="corner-up-right" onClose={() => props.setTourStep(0)}>
+          {props.tourStep === 7 && (
+            <CoachTip n={6} placement="corner-up-right" onClose={() => props.setTourStep(0)}>
               Add more seeds to feed the experiment more users. — Click the <strong>Seed 5 per variant</strong> button.
             </CoachTip>
           )}
@@ -1887,22 +1901,22 @@ function UserBoard(props: {
               </div>
               {colUsers.length === 0 && <div className="muted small">No customers yet</div>}
               {colUsers.map((u, rowIndex) => {
-                // The tour spotlights three successes in order: one in bucket 1 (step 7), then two
-                // in bucket 2 (steps 8 and 9). The spotlighted button advances the tour on click.
+                // The tour spotlights three successes in order: one in bucket 1 (step 8), then two
+                // in bucket 2 (steps 9 and 10). The spotlighted button advances the tour on click.
                 let tipStep = 0;
                 let tipText = "";
                 // Bucket-1 (left column) tips point up-right so they clear the Experiments
                 // sidebar; the bucket-2 (right column) tips point left into the open gap.
                 let tipPlacement: "left" | "corner-up-right" = "left";
                 if (colIndex === 0 && rowIndex === 0) {
-                  tipStep = 7;
+                  tipStep = 8;
                   tipText = "Mimic a success event from this customer.";
                   tipPlacement = "corner-up-right";
                 } else if (colIndex === 1 && rowIndex === 0) {
-                  tipStep = 8;
+                  tipStep = 9;
                   tipText = "Mimic a success in the other variant so both have wins.";
                 } else if (colIndex === 1 && rowIndex === 1) {
-                  tipStep = 9;
+                  tipStep = 10;
                   tipText = "Add one more success in this bucket to build enough signal to compare the variants in the statistics table.";
                 }
                 const showTip = tipStep !== 0 && props.tourStep === tipStep;

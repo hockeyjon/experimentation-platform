@@ -293,6 +293,9 @@ a { color: var(--accent); }
 
 /* Guided-tour coach-mark: anchored to the RIGHT of its target button, pointing back at it. */
 .tour-anchor { position: relative; display: inline-flex; }
+/* The variant field is a tour anchor for the "select control" tip, but must stay a normal block
+   (not inline-flex) so its label-over-select layout is unchanged. */
+.tour-anchor.assign-variant-anchor { display: block; }
 .coach-tip {
   position: absolute; z-index: 40; left: calc(100% + 16px); top: 50%; transform: translateY(-50%);
   display: flex; align-items: flex-start; gap: 10px;
